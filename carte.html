@@ -61,6 +61,7 @@
   .zbox{display:flex;gap:8px}
   .zb{flex:1;font-size:22px;line-height:1;padding:8px 0;min-width:46px}
   #scaleSel{font-size:15px;padding:10px 8px;appearance:none;-webkit-appearance:none;text-align:center}
+  #isoStatus{display:none;position:fixed;top:calc(env(safe-area-inset-top) + 64px);left:50%;transform:translateX(-50%);z-index:1001;background:#d9650f;color:#fff;font-size:13px;font-weight:600;padding:6px 12px;border-radius:10px;box-shadow:0 2px 8px rgba(0,0,0,.25);max-width:90vw;text-align:center}
   #scaleLbl{position:fixed;left:10px;bottom:calc(env(safe-area-inset-bottom) + 38px);z-index:900;background:rgba(255,255,255,.9);border-radius:8px;padding:3px 8px;font-weight:700;font-size:15px;pointer-events:none}
   .frameTag{background:#d9650f;color:#fff;font-weight:700;font-size:12px;padding:3px 7px;border-radius:6px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.3)}
   .leaflet-control-attribution{font-size:9px}
@@ -71,6 +72,7 @@
 <div id="map"></div>
 <div id="cross" class="ui"></div>
 <div id="north">N<br>↑</div>
+<div id="isoStatus" class="ui"></div>
 <div id="scaleLbl">1:10 000</div>
 
 <div class="top ui">
@@ -144,7 +146,7 @@ const MOBILE=/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)||(navigator.p
 const STORE='cartesco-carto-v2';
 
 /* Classement d'intérêt pour la course d'orientation (ordre d'affichage de la liste) */
-const RANK=['lidar','contour','nord','ortho','scan25','forest','shadow','osm','otm','hydro','plan','cadastre','bati','roads','dfci'];
+const RANK=['iso','lidar','contour','nord','ortho','scan25','forest','shadow','osm','otm','hydro','plan','cadastre','bati','roads','dfci'];
 
 /* ---------- Catalogue des couches ----------
    Ordre du tableau = ordre d'empilement automatique (le premier tout en bas). */
@@ -155,6 +157,7 @@ const CAT=[
   {id:'otm',    grp:'Fond',nom:'OpenTopoMap',desc:'Carte topo OSM avec courbes, bonne vue d’ensemble',url:'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',max:17,op:100,sub:'abc',attr:'© OpenTopoMap (CC-BY-SA), © OSM'},
   {id:'scan25', grp:'Fond',nom:'Carte IGN Top 25',desc:'Sentiers, rochers, ruines, noms de lieux-dits : la référence rando',url:'https://data.geopf.fr/private/wmts?apikey=ign_scan_ws&SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=GEOGRAPHICALGRIDSYSTEMS.MAPS.SCAN25TOUR&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=image/jpeg',max:16,op:100},
   {id:'ortho',  grp:'Fond',nom:'Photo aérienne IGN',desc:'Clairières, bois clairs ou denses, zones rocheuses, murets',url:IGN('ORTHOIMAGERY.ORTHOPHOTOS','jpeg'),max:19,op:100},
+  {id:'iso',    grp:'Fond',nom:'Carte CO style ISOM (auto)',desc:'Couleurs des cartes de course d’orientation, dessinée automatiquement depuis les données IGN. Approximation : à vérifier sur le terrain',iso:true,max:19,op:100},
   {id:'shadow', grp:'Relief',nom:'Ombrage du relief IGN',desc:'Relief estompé, partout en France (secours si pas de LiDAR)',url:IGN('IGNF_ELEVATION.ELEVATIONGRIDCOVERAGE.SHADOW'),max:17,op:45},
   {id:'lidar',  grp:'Relief',nom:'Relief LiDAR HD',desc:'Le sol vu à travers les arbres : talus, fossés, murets, rochers, dépressions. La base des cartographes CO',url:IGN('IGNF_LIDAR-HD_MNT_ELEVATION.ELEVATIONGRIDCOVERAGE.SHADOW'),max:18,op:60},
   {id:'forest', grp:'Superposition',nom:'Forêts (BD Forêt)',desc:'Feuillus, résineux, landes : aide à prévoir la course dans le bois',url:IGN('LANDCOVER.FORESTINVENTORY.V2'),max:16,op:55},
@@ -195,6 +198,277 @@ function saveState(){
 const map=L.map('map',{zoomControl:false,maxZoom:20,minZoom:5,zoomSnap:0,zoomDelta:1,wheelPxPerZoomLevel:120}).setView([S.view.lat,S.view.lon],S.view.z);
 L.control.scale({imperial:false,position:'bottomleft',maxWidth:160}).addTo(map);
 map.attributionControl.setPrefix('');
+/* =====================================================================
+   Couche « Carte CO style ISOM » : dessinée dans le navigateur à partir
+   des données IGN BD TOPO (WFS) + altitudes (AWS Terrain Tiles).
+   Couleurs et épaisseurs de trait inspirées de la norme ISOM 2017-2,
+   calculées en millimètres sur le papier à l'échelle du cadre choisi.
+   ===================================================================== */
+S.iso=Object.assign({eq:'auto'},S.iso||{});
+const ISO={data:null,box:null,loading:null,elev:new Map()};
+const wX=lon=>(lon+180)/360;
+const wY=lat=>{const r=lat*Math.PI/180;return(1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2;};
+const wLon=X=>X*360-180;
+const wLat=Y=>Math.atan(Math.sinh(Math.PI*(1-2*Y)))*180/Math.PI;
+function isoEq(){return S.iso.eq==='auto'?((+$('fScale').value)<=5000?2.5:5):+S.iso.eq;}
+let isoMsgTimer=null;
+function isoStatus(t,keep){
+  const e=$('isoStatus');if(!e)return;
+  clearTimeout(isoMsgTimer);e.textContent=t||'';e.style.display=t?'block':'none';
+  if(t&&!keep)isoMsgTimer=setTimeout(()=>{e.style.display='none';},4000);
+}
+
+/* ----- téléchargement des données IGN (service WFS, gratuit) ----- */
+async function isoWfs(layer,s,w,n,e){
+  const COUNT=5000;let start=0,all=[];
+  for(let page=0;page<10;page++){
+    const url='https://data.geopf.fr/wfs/ows?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature'
+      +'&TYPENAMES=BDTOPO_V3:'+layer+'&OUTPUTFORMAT=application/json&SRSNAME=EPSG:4326'
+      +'&COUNT='+COUNT+'&STARTINDEX='+start+'&BBOX='+s+','+w+','+n+','+e+',urn:ogc:def:crs:EPSG::4326';
+    let js=null,lastErr;
+    for(let essai=1;essai<=2&&!js;essai++){
+      const ctrl=new AbortController(),t=setTimeout(()=>ctrl.abort(),40000);
+      try{const r=await fetch(url,{signal:ctrl.signal});if(!r.ok)throw new Error('HTTP '+r.status);js=await r.json();}
+      catch(err){lastErr=err;await sleep(1500);}
+      finally{clearTimeout(t);}
+    }
+    if(!js)throw new Error(layer+' : '+(lastErr&&lastErr.message));
+    const f=js.features||[];all=all.concat(f);
+    if(f.length<COUNT)break;start+=COUNT;
+  }
+  return all;
+}
+// GeoJSON -> anneaux / lignes en coordonnées « monde » (0..1, Web Mercator)
+function isoParts(g,poly){
+  if(!g)return[];
+  let list=[];
+  if(poly){if(g.type==='Polygon')list=g.coordinates;else if(g.type==='MultiPolygon')list=g.coordinates.flat();}
+  else{if(g.type==='LineString')list=[g.coordinates];else if(g.type==='MultiLineString')list=g.coordinates;}
+  return list.map(r=>{const a=new Float64Array(r.length*2);r.forEach((p,i)=>{a[2*i]=wX(p[0]);a[2*i+1]=wY(p[1]);});return a;});
+}
+function isoFeat(F,k,parts){
+  if(!parts.length)return;
+  let x0=9,y0=9,x1=-9,y1=-9;
+  for(const a of parts)for(let i=0;i<a.length;i+=2){if(a[i]<x0)x0=a[i];if(a[i]>x1)x1=a[i];if(a[i+1]<y0)y0=a[i+1];if(a[i+1]>y1)y1=a[i+1];}
+  F.push({k,parts,b:[x0,y0,x1,y1]});
+}
+async function isoLoad(bx){ // bx = [x0,y0,x1,y1] monde
+  const s=wLat(bx[3]),n=wLat(bx[1]),w=wLon(bx[0]),e=wLon(bx[2]);
+  const names=['zone_de_vegetation','surface_hydrographique','batiment','troncon_de_route',
+               'troncon_hydrographique','construction_lineaire','ligne_orographique','haie'];
+  const res=await Promise.all(names.map(L=>isoWfs(L,s,w,n,e)));
+  const L={};names.forEach((k,i)=>L[k]=res[i]);
+  const F=[];
+  const enService=p=>!p.etat_de_l_objet||p.etat_de_l_objet==='En service';
+  const sousTerre=p=>p.position_par_rapport_au_sol!=null&&+p.position_par_rapport_au_sol<0;
+  for(const f of L.zone_de_vegetation){
+    const nat=f.properties.nature||'';let k=null;
+    if(nat.startsWith('Forêt')||nat==='Bois'||nat==='Peupleraie')k='forest';
+    else if(nat==='Lande ligneuse')k='scrub';
+    else if(nat==='Haie')k='dense';
+    else if(nat==='Vigne')k='vine';
+    else if(nat==='Verger')k='orchard';
+    if(k)isoFeat(F,k,isoParts(f.geometry,true));
+  }
+  for(const f of L.surface_hydrographique){if(!sousTerre(f.properties))isoFeat(F,'water',isoParts(f.geometry,true));}
+  for(const f of L.batiment)isoFeat(F,'building',isoParts(f.geometry,true));
+  for(const f of L.troncon_de_route){
+    const p=f.properties;if(p.fictif===true||!enService(p)||sousTerre(p))continue;
+    const nat=p.nature||'',imp=+p.importance||5;let k=null;
+    if(nat==='Sentier'||nat==='Escalier')k='spath';
+    else if(nat==='Chemin'||nat==='Piste cyclable')k='path';
+    else if(nat==='Route empierrée')k='track';
+    else if(nat==='Type autoroutier'||nat==='Route à 2 chaussées'||((nat.startsWith('Route')||nat==='Bretelle'||nat==='Rond-point')&&imp<=3))k='road2';
+    else if((nat.startsWith('Route')||nat==='Bretelle'||nat==='Rond-point')&&imp===4)k='road1';
+    else if(nat.startsWith('Route')||nat==='Bretelle'||nat==='Rond-point')k='road0';
+    if(k)isoFeat(F,k,isoParts(f.geometry,false));
+  }
+  for(const f of L.troncon_hydrographique){
+    const p=f.properties;if(sousTerre(p)||(p.nature||'').startsWith('Conduit'))continue;
+    isoFeat(F,p.persistance==='Intermittent'?'streamI':'stream',isoParts(f.geometry,false));
+  }
+  for(const f of L.construction_lineaire){
+    const nat=f.properties.nature||'';let k=null;
+    if(nat.startsWith('Mur')||nat==='Barrage')k='wall';else if(nat==='Ruines')k='ruin';else if(nat==='Clôture')k='fence';
+    if(k)isoFeat(F,k,isoParts(f.geometry,false));
+  }
+  for(const f of L.ligne_orographique){
+    const nat=f.properties.nature||'';
+    const k=nat==='Carrière'?'cliff':(nat==='Talus'||nat==='Levée')?'bank':null;
+    if(k)isoFeat(F,k,isoParts(f.geometry,false));
+  }
+  for(const f of L.haie)isoFeat(F,'hedge',isoParts(f.geometry,false));
+  ISO.data=F;ISO.box=bx;
+}
+const isoCovers=(x0,y0,x1,y1)=>ISO.box&&x0>=ISO.box[0]&&y0>=ISO.box[1]&&x1<=ISO.box[2]&&y1<=ISO.box[3];
+// S'assure que les données couvrent la zone demandée (en coordonnées monde). false si zone trop grande.
+async function isoEnsure(x0,y0,x1,y1){
+  for(let k=0;k<4;k++){
+    if(isoCovers(x0,y0,x1,y1))return true;
+    if(ISO.loading){try{await ISO.loading;}catch(e){}continue;}
+    const mx=(x1-x0)*0.35,my=(y1-y0)*0.35,bx=[x0-mx,y0-my,x1+mx,y1+my];
+    const km=(bx[2]-bx[0])*40075*Math.cos(wLat((bx[1]+bx[3])/2)*Math.PI/180);
+    if(km>16){isoStatus('Carte CO style ISOM : zoome davantage pour l\'afficher (zone limitée à 16 km de large).');return false;}
+    ISO.loading=(async()=>{
+      isoStatus('Carte CO style ISOM : chargement des données IGN…',true);
+      try{await isoLoad(bx);isoStatus('');}
+      catch(e){isoStatus('Carte CO style ISOM : données IGN indisponibles, réessaie dans un moment.');throw e;}
+      finally{ISO.loading=null;}
+    })();
+    try{await ISO.loading;}catch(e){return false;}
+  }
+  return isoCovers(x0,y0,x1,y1);
+}
+
+/* ----- altitudes (tuiles Terrarium, zoom 14) pour les courbes brunes ----- */
+async function isoElevTile(x,y){
+  const key=x+'/'+y;
+  if(ISO.elev.has(key))return ISO.elev.get(key);
+  const p=(async()=>{
+    try{
+      const img=await loadImg(`https://s3.amazonaws.com/elevation-tiles-prod/terrarium/14/${x}/${y}.png`);
+      const c=document.createElement('canvas');c.width=c.height=256;
+      const g=c.getContext('2d',{willReadFrequently:true});g.drawImage(img,0,0);
+      const d=g.getImageData(0,0,256,256).data,a=new Float32Array(65536);
+      for(let i=0;i<65536;i++)a[i]=d[i*4]*256+d[i*4+1]+d[i*4+2]/256-32768;
+      // léger lissage 3x3 pour des courbes moins anguleuses
+      const b=new Float32Array(65536);
+      for(let j=0;j<256;j++)for(let i=0;i<256;i++){
+        let s=0,n=0;
+        for(let dj=-1;dj<=1;dj++)for(let di=-1;di<=1;di++){const ii=i+di,jj=j+dj;if(ii>=0&&ii<256&&jj>=0&&jj<256){s+=a[jj*256+ii];n++;}}
+        b[j*256+i]=s/n;
+      }
+      return b;
+    }catch(e){return null;}
+  })();
+  ISO.elev.set(key,p);
+  const v=await p;ISO.elev.set(key,v);return v;
+}
+async function isoElevEnsure(x0,y0,x1,y1){
+  const n=2**14,jobs=[];
+  for(let x=Math.floor(x0*n)-1;x<=Math.floor(x1*n)+1;x++)for(let y=Math.floor(y0*n)-1;y<=Math.floor(y1*n)+1;y++)jobs.push(isoElevTile(x,y));
+  await Promise.all(jobs);
+}
+function isoElev(X,Y){ // altitude interpolée en coordonnées monde
+  const N=2**14*256,px=X*N-0.5,py=Y*N-0.5,i=Math.floor(px),j=Math.floor(py),ax=px-i,ay=py-j;
+  const v=(gi,gj)=>{const t=ISO.elev.get((gi>>8)+'/'+(gj>>8));return t&&t.length?t[(gj&255)*256+(gi&255)]:NaN;};
+  return v(i,j)*(1-ax)*(1-ay)+v(i+1,j)*ax*(1-ay)+v(i,j+1)*(1-ax)*ay+v(i+1,j+1)*ax*ay;
+}
+
+/* ----- dessin d'une tuile (z,x,y) dans un contexte 2D, R = pixels de canevas par pixel de tuile ----- */
+const ISOC={yellow:'#FFDD9A',open:'#FFBA36',white:'#FFFFFF',green1:'#C5E8B7',green2:'#8BD27A',green3:'#3DB54A',
+  blue:'#00A0E0',water:'#7FD0F5',brown:'#D15C00',black:'#000000',building:'#5A5A5A',road:'#EDB777'};
+function paintIso(ctx,z,x,y,R){
+  const N=256*2**z,ox=x*256,oy=y*256;
+  const latC=wLat((y+0.5)/2**z);
+  const mPerPx=40075016.686*Math.cos(latC*Math.PI/180)/N;
+  const MM=(+$('fScale').value/1000)/mPerPx*R;          // pixels de canevas pour 1 mm sur le papier
+  const W=ctx.canvas.width,H=ctx.canvas.height;
+  const P=(X,Yw)=>[(X*N-ox)*R,(Yw*N-oy)*R];
+  const marg=4*MM/(R*N);
+  const tb=[x/2**z-marg,y/2**z-marg,(x+1)/2**z+marg,(y+1)/2**z+marg];
+  const feats=(ISO.data||[]).filter(f=>f.b[2]>=tb[0]&&f.b[0]<=tb[2]&&f.b[3]>=tb[1]&&f.b[1]<=tb[3]);
+  const by={};for(const f of feats)(by[f.k]=by[f.k]||[]).push(f);
+  const trace=(f,close)=>{for(const a of f.parts){for(let i=0;i<a.length;i+=2){const[px,py]=P(a[i],a[i+1]);i?ctx.lineTo(px,py):ctx.moveTo(px,py);}if(close)ctx.closePath();}};
+  const fill=(k,style)=>{const L=by[k];if(!L)return;ctx.fillStyle=style;for(const f of L){ctx.beginPath();trace(f,true);ctx.fill('evenodd');}};
+  const lw=mm=>Math.max(mm*MM,0.7*R);
+  const line=(k,color,mm,dash,cap)=>{const L=by[k];if(!L)return;
+    ctx.strokeStyle=color;ctx.lineWidth=lw(mm);ctx.setLineDash(dash?dash.map(v=>v*MM):[]);ctx.lineCap=cap||'butt';ctx.lineJoin='round';
+    ctx.beginPath();for(const f of L)trace(f,false);ctx.stroke();ctx.setLineDash([]);};
+  const pattern=(draw,sizeMM)=>{
+    const s=Math.max(3,Math.round(sizeMM*MM)),c=document.createElement('canvas');c.width=c.height=s;
+    draw(c.getContext('2d'),s);const p=ctx.createPattern(c,'repeat');
+    if(p&&p.setTransform)p.setTransform(new DOMMatrix().translate(-((ox*R)%s),-((oy*R)%s)));
+    return p;};
+
+  // 1. fond : terrain semi-découvert (jaune pâle)
+  ctx.fillStyle=ISOC.yellow;ctx.fillRect(0,0,W,H);
+  // 2. vigne (jaune + rayures vertes), verger (jaune + points verts)
+  fill('vine',ISOC.open);
+  fill('vine',pattern((g,s)=>{g.fillStyle=ISOC.green3;g.fillRect(0,0,Math.max(1,s*0.3),s);},1.2));
+  fill('orchard',ISOC.open);
+  fill('orchard',pattern((g,s)=>{g.fillStyle=ISOC.green3;g.beginPath();g.arc(s/2,s/2,Math.max(0.8,s*0.22),0,7);g.fill();},1.5));
+  // 3. végétation : landes (vert clair), forêt courable (blanc), haies (vert moyen)
+  fill('scrub',ISOC.green1);
+  fill('forest',ISOC.white);
+  fill('dense',ISOC.green2);
+  // 4. eau
+  fill('water',ISOC.water);
+  if(by.water){ctx.strokeStyle=ISOC.black;ctx.lineWidth=lw(0.14);for(const f of by.water){ctx.beginPath();trace(f,true);ctx.stroke();}}
+
+  // 5. courbes de niveau (brun), maîtresse toutes les 5 courbes
+  const eq=isoEq(),step=Math.max(2,Math.round(4/mPerPx));
+  const i0=Math.floor(ox/step)-1,i1=Math.ceil((ox+256)/step)+1,j0=Math.floor(oy/step)-1,j1=Math.ceil((oy+256)/step)+1;
+  const nx=i1-i0+1,ny=j1-j0+1,G=new Float32Array(nx*ny);let zmin=1e9,zmax=-1e9;
+  for(let j=0;j<ny;j++)for(let i=0;i<nx;i++){const v=isoElev((i0+i)*step/N,(j0+j)*step/N);G[j*nx+i]=v;if(v<zmin)zmin=v;if(v>zmax)zmax=v;}
+  if(isFinite(zmin)&&isFinite(zmax)&&zmax>zmin){
+    const cx=i=>((i0+i)*step-ox)*R,cy=j=>((j0+j)*step-oy)*R;
+    for(const idx of [false,true]){
+      ctx.beginPath();
+      for(let Lv=Math.ceil(zmin/eq)*eq;Lv<=zmax;Lv+=eq){
+        const isIdx=Math.abs(Lv/(eq*5)-Math.round(Lv/(eq*5)))<1e-6;if(isIdx!==idx)continue;
+        for(let j=0;j<ny-1;j++)for(let i=0;i<nx-1;i++){
+          const a=G[j*nx+i],b=G[j*nx+i+1],c=G[(j+1)*nx+i+1],d=G[(j+1)*nx+i];
+          const cs=(a>=Lv?8:0)|(b>=Lv?4:0)|(c>=Lv?2:0)|(d>=Lv?1:0);if(cs===0||cs===15)continue;
+          const Pt={T:()=>[cx(i+(Lv-a)/(b-a)),cy(j)],R:()=>[cx(i+1),cy(j+(Lv-b)/(c-b))],B:()=>[cx(i+(Lv-d)/(c-d)),cy(j+1)],L:()=>[cx(i),cy(j+(Lv-a)/(d-a))]};
+          const sg=(p,q)=>{const u=Pt[p](),v=Pt[q]();ctx.moveTo(u[0],u[1]);ctx.lineTo(v[0],v[1]);};
+          switch(cs){case 1:case 14:sg('B','L');break;case 2:case 13:sg('R','B');break;case 3:case 12:sg('L','R');break;
+            case 4:case 11:sg('T','R');break;case 5:sg('T','R');sg('B','L');break;case 6:case 9:sg('T','B');break;
+            case 7:case 8:sg('T','L');break;case 10:sg('T','L');sg('R','B');break;}
+        }
+      }
+      ctx.strokeStyle=ISOC.brown;ctx.lineWidth=lw(idx?0.25:0.14);ctx.lineCap='round';ctx.stroke();
+    }
+  }
+  // 6. talus (brun), cours d'eau (bleu)
+  line('bank',ISOC.brown,0.37);
+  line('stream',ISOC.blue,0.25,null,'round');
+  line('streamI',ISOC.blue,0.18,[2,0.25]);
+  // 7. haies, murs, ruines, clôtures
+  line('hedge',ISOC.green3,0.45,null,'round');
+  line('fence',ISOC.black,0.14);
+  line('ruin',ISOC.black,0.14,[1,0.5]);
+  line('wall',ISOC.black,0.18);
+  // 8. chemins et routes (noir), routes larges en double trait
+  line('spath',ISOC.black,0.18,[1,0.25]);
+  line('path',ISOC.black,0.25,[2,0.25]);
+  line('track',ISOC.black,0.35,[2,0.25]);
+  line('road0',ISOC.black,0.35,null,'round');
+  line('road1',ISOC.black,0.6,null,'round');line('road1',ISOC.road,0.4,null,'round');
+  line('road2',ISOC.black,0.85,null,'round');line('road2',ISOC.road,0.6,null,'round');
+  // 9. bâtiments, carrières / falaises
+  fill('building',ISOC.building);
+  line('cliff',ISOC.black,0.35);
+}
+// Couche Leaflet : chaque tuile est dessinée à partir des données en mémoire
+const IsoLayer=L.GridLayer.extend({
+  createTile(coords,done){
+    const t=document.createElement('canvas'),r=Math.min(2,window.devicePixelRatio||1);
+    t.width=t.height=Math.round(256*r);t.style.width=t.style.height='256px';
+    (async()=>{
+      try{
+        if(coords.z<13){isoStatus('Carte CO style ISOM : zoome davantage pour l\'afficher.');done(null,t);return;}
+        const v=map.getBounds(),n=2**coords.z;
+        const tb=[coords.x/n,coords.y/n,(coords.x+1)/n,(coords.y+1)/n];
+        const x0=Math.min(tb[0],wX(v.getWest())),x1=Math.max(tb[2],wX(v.getEast())),y0=Math.min(tb[1],wY(v.getNorth())),y1=Math.max(tb[3],wY(v.getSouth()));
+        await isoEnsure(x0,y0,x1,y1);
+        await isoElevEnsure(tb[0],tb[1],tb[2],tb[3]);
+        paintIso(t.getContext('2d'),coords.z,coords.x,coords.y,r);
+      }catch(e){console.warn('ISOM',e);}
+      done(null,t);
+    })();
+    return t;
+  }
+});
+// Une tuile ISOM pour l'export (canevas hors écran)
+async function isoTileCanvas(z,x,y){
+  const n=2**z;
+  await isoElevEnsure(x/n,y/n,(x+1)/n,(y+1)/n);
+  const c=document.createElement('canvas');c.width=c.height=256;
+  paintIso(c.getContext('2d'),z,x,y,1);
+  return c;
+}
+
 const LAY={};
 /* Carroyage nord : lignes dessinées dans le navigateur, tournées de la déclinaison (vers l'est si positive) */
 let gridLat=S.view.lat;
@@ -217,6 +491,7 @@ const NordLayer=L.GridLayer.extend({
 });
 for(const c of CAT){
   if(c.grid){LAY[c.id]=new NordLayer({maxZoom:20});continue;}
+  if(c.iso){LAY[c.id]=new IsoLayer({maxZoom:20});continue;}
   LAY[c.id]=L.tileLayer(c.url,{maxNativeZoom:c.max,maxZoom:20,subdomains:c.sub||'abc',crossOrigin:true,
     attribution:c.attr||'© IGN Géoplateforme'});
 }
@@ -259,6 +534,18 @@ function renderList(){
       sel.value=String(S.grid.space);
       sel.onchange=()=>{S.grid.space=sel.value==='auto'?'auto':+sel.value;LAY.nord.redraw();saveState();};
       inp.onchange=()=>{const v=parseFloat(String(inp.value).replace(',','.'));if(isFinite(v)){S.grid.decl=v;LAY.nord.redraw();saveState();}};
+      d.appendChild(gs);
+    }
+    if(c.iso&&S.on[id]){
+      const sc=+$('fScale').value,auto=sc<=5000?'2,5':'5';
+      const gs=document.createElement('div');gs.className='gset';
+      gs.innerHTML=`<label>Équidistance <select>
+          <option value="auto">auto : ${auto} m (cadre 1:${sc.toLocaleString('fr-FR')})</option>
+          <option value="2.5">2,5 m</option><option value="5">5 m</option><option value="10">10 m</option>
+        </select></label>
+        <small>Blanc = forêt courable · vert = végétation gênante · jaune = terrain ouvert · brun = relief · noir = chemins, murs, rochers · bleu = eau. Épaisseurs calculées pour l'échelle du cadre. Données IGN BD TOPO : la densité réelle de la végétation se vérifie sur le terrain.</small>`;
+      const sel=gs.querySelector('select');sel.value=String(S.iso.eq);
+      sel.onchange=()=>{S.iso.eq=sel.value==='auto'?'auto':+sel.value;LAY.iso.redraw();saveState();};
       d.appendChild(gs);
     }
     box.appendChild(d);
@@ -323,6 +610,7 @@ function frameChanged(){
   $('scaleSel').value=$('fScale').value;$('fOn').checked=true;
   fitFrame();
   if(S.grid.space==='auto'&&map.hasLayer(LAY.nord))LAY.nord.redraw();
+  if(map.hasLayer(LAY.iso))LAY.iso.redraw(); // épaisseurs de trait et équidistance dépendent de l'échelle
 }
 function fitFrame(){
   if(!$('fOn').checked){$('fOn').checked=true;}
@@ -427,7 +715,7 @@ async function drawTiles(ctx,L,box,ppm,lat0,toXY,progress){
   const worker=async()=>{
     while(queue.length){
       const[x,y]=queue.shift();
-      const img=await fetchTile(tileURL(L,z,x,y));
+      const img=L.iso?await isoTileCanvas(z,x,y):await fetchTile(tileURL(L,z,x,y));
       const[x1,y1]=toXY(tileLat(y,z),tileLon(x,z)),[x2,y2]=toXY(tileLat(y+1,z),tileLon(x+1,z));
       if(img)ctx.drawImage(img,x1,y1,x2-x1+0.6,y2-y1+0.6);
       else{ // tuile absente : morceau agrandi d'une tuile de zoom inférieur
@@ -483,6 +771,10 @@ async function exportFrame(kind){
         ctx.strokeStyle='#1450d2';ctx.lineWidth=mm(0.2);
         for(let q=-K;q<=K;q++){const px=cx+q*sp*n[0],py=cy+q*sp*n[1];ctx.beginPath();ctx.moveTo(px-R*d[0],py-R*d[1]);ctx.lineTo(px+R*d[0],py+R*d[1]);ctx.stroke();}
         continue;
+      }
+      if(L.iso){ // données IGN de toute la zone du cadre
+        st(`Couche ${k+1}/${active.length} : ${L.nom} (données IGN)…`);
+        if(!await isoEnsure(wX(box.lonMin),wY(box.latMax),wX(box.lonMax),wY(box.latMin)))throw new Error('données IGN indisponibles pour la carte CO style ISOM');
       }
       st(`Couche ${k+1}/${active.length} : ${L.nom}…`);
       fails+=await drawTiles(ctx,L,box,ppm,lat0,toXY,(d,t)=>st(`Couche ${k+1}/${active.length} : ${L.nom} (${d}/${t} morceaux)…`));
