@@ -327,8 +327,11 @@ function fitFrame(){
   if(!$('fOn').checked){$('fOn').checked=true;}
   drawFrame();
   if(frameRect){
-    const narrow=window.innerWidth<700; // sur iPhone : marge pour la barre de recherche et les boutons
-    map.fitBounds(frameRect.getBounds(),{paddingTopLeft:[16,narrow?70:60],paddingBottomRight:[narrow?16:150,narrow?60:30]});
+    // on garde le même centre (sinon le cadre, centré sur l'écran, glisserait) et on choisit le zoom
+    // qui laisse de la place à la barre de recherche et aux boutons
+    const narrow=window.innerWidth<700;
+    const z=map.getBoundsZoom(frameRect.getBounds(),false,L.point(narrow?40:320,narrow?150:130));
+    map.setView(map.getCenter(),z);
   }
   saveState();
 }
