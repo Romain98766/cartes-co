@@ -33,6 +33,9 @@
   .lyr input[type=checkbox]{width:22px;height:22px}
   .lyr .nm{font-size:15px}
   .lyr .nm small{display:block;color:var(--muted);font-size:12px}
+  .gset{grid-column:2/4;display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;font-size:13px;color:var(--ink);margin-top:4px}
+  .gset select,.gset input{font-size:14px;padding:6px;border:1px solid var(--line);border-radius:8px}
+  .gset small{color:var(--muted);width:100%}
   .lyr .rk{display:inline-block;min-width:22px;color:var(--accent);font-weight:700}
   .lyr .ontop{border:0;background:#efebe2;border-radius:8px;padding:6px 9px;font-size:13px;white-space:nowrap}
   .lyr .ontop.is{background:#d9650f;color:#fff}
@@ -111,7 +114,6 @@
   <div class="info" id="fInfo"></div>
   <label class="f">Titre imprimé sur la carte</label>
   <input id="fTitle" value="Carte CO" onchange="saveState()" style="width:100%;font-size:16px;padding:10px;border:1px solid var(--line);border-radius:10px">
-  <label class="chk"><input type="checkbox" id="fNorth" checked onchange="saveState()"> Lignes nord (tous les 500 m)</label>
   <button class="btn wide" onclick="fitFrame()">Zoomer sur le cadre</button>
   <button class="btn main wide" onclick="exportFrame('pdf')">📄 Exporter ce cadre en PDF (mes couches)</button>
   <button class="btn wide" onclick="exportFrame('png')">🖼️ Exporter en image PNG</button>
@@ -141,7 +143,7 @@ const MOBILE=/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)||(navigator.p
 const STORE='cartesco-carto-v2';
 
 /* Classement d'intérêt pour la course d'orientation (ordre d'affichage de la liste) */
-const RANK=['lidar','contour','ortho','scan25','forest','shadow','osm','otm','hydro','plan','cadastre','bati','roads','dfci'];
+const RANK=['lidar','contour','nord','ortho','scan25','forest','shadow','osm','otm','hydro','plan','cadastre','bati','roads','dfci'];
 
 /* ---------- Catalogue des couches ----------
    Ordre du tableau = ordre d'empilement automatique (le premier tout en bas). */
@@ -160,7 +162,8 @@ const CAT=[
   {id:'roads',  grp:'Superposition',nom:'Routes',desc:'Réseau routier seul',url:IGN('TRANSPORTNETWORKS.ROADS'),max:18,op:100},
   {id:'bati',   grp:'Superposition',nom:'Bâtiments',desc:'Bâti seul',url:IGN('BUILDINGS.BUILDINGS'),max:18,op:100},
   {id:'hydro',  grp:'Superposition',nom:'Cours d’eau',desc:'Ruisseaux et ravines : très bons points de repère',url:IGN('HYDROGRAPHY.HYDROGRAPHY'),max:18,op:100},
-  {id:'contour',grp:'Superposition',nom:'Courbes de niveau IGN',desc:'Le relief chiffré : buttes, cuvettes, éperons, vallons',url:IGN('ELEVATION.CONTOUR.LINE'),max:18,op:100,on:true}
+  {id:'contour',grp:'Superposition',nom:'Courbes de niveau IGN',desc:'Le relief chiffré : buttes, cuvettes, éperons, vallons',url:IGN('ELEVATION.CONTOUR.LINE'),max:18,op:100,on:true},
+  {id:'nord',   grp:'Superposition',nom:'Lignes nord (boussole)',desc:'Carroyage orienté nord magnétique, comme sur les cartes de CO',grid:true,max:20,op:100}
 ];
 
 /* ---------- État (mémorisé dans le navigateur) ---------- */
@@ -179,8 +182,10 @@ try{
     S.pinned=Array.isArray(S.pinned)?S.pinned.filter(id=>CAT.some(c=>c.id===id)):[];
   }
 }catch(e){}
+S.grid=Object.assign({decl:2.5,space:'auto'},S.grid||{}); // déclinaison WMM 2025 Hérault 2026 : +2,5° Est
+function gridSpacing(){return S.grid.space==='auto'?(+$('fScale').value)/50:+S.grid.space;} // auto : 20 mm sur la carte imprimée (norme ISOM)
 function saveState(){
-  S.frame={on:$('fOn').checked,paper:$('fPaper').value,orient:$('fOrient').value,scale:$('fScale').value,title:$('fTitle').value,north:$('fNorth').checked};
+  S.frame={on:$('fOn').checked,paper:$('fPaper').value,orient:$('fOrient').value,scale:$('fScale').value,title:$('fTitle').value};
   const c=map.getCenter();S.view={lat:c.lat,lon:c.lng,z:map.getZoom()};
   try{localStorage.setItem(STORE,JSON.stringify(S));}catch(e){}
 }
@@ -190,7 +195,27 @@ const map=L.map('map',{zoomControl:false,maxZoom:20,minZoom:5,zoomSnap:0,zoomDel
 L.control.scale({imperial:false,position:'bottomleft',maxWidth:160}).addTo(map);
 map.attributionControl.setPrefix('');
 const LAY={};
+/* Carroyage nord : lignes dessinées dans le navigateur, tournées de la déclinaison (vers l'est si positive) */
+let gridLat=S.view.lat;
+const NordLayer=L.GridLayer.extend({
+  createTile(coords){
+    const t=document.createElement('canvas'),r=window.devicePixelRatio||1;
+    t.width=256*r;t.height=256*r;t.style.width='256px';t.style.height='256px';
+    const g=t.getContext('2d');g.scale(r,r);
+    const mPerPx=40075016.686*Math.cos(gridLat*Math.PI/180)/(256*2**coords.z);
+    const sp=gridSpacing()/mPerPx;if(sp<5)return t; // trop serré à ce zoom : on n'affiche rien
+    const dl=S.grid.decl*Math.PI/180,n=[Math.cos(dl),Math.sin(dl)],d=[Math.sin(dl),-Math.cos(dl)];
+    const ox=coords.x*256,oy=coords.y*256,cx=ox+128,cy=oy+128,uc=cx*n[0]+cy*n[1];
+    g.strokeStyle='#1450d2';g.lineWidth=1.6;
+    for(let k=Math.floor((uc-200)/sp);k<=Math.ceil((uc+200)/sp);k++){
+      const off=k*sp-uc,px=cx+off*n[0]-ox,py=cy+off*n[1]-oy;
+      g.beginPath();g.moveTo(px-400*d[0],py-400*d[1]);g.lineTo(px+400*d[0],py+400*d[1]);g.stroke();
+    }
+    return t;
+  }
+});
 for(const c of CAT){
+  if(c.grid){LAY[c.id]=new NordLayer({maxZoom:20});continue;}
   LAY[c.id]=L.tileLayer(c.url,{maxNativeZoom:c.max,maxZoom:20,subdomains:c.sub||'abc',crossOrigin:true,
     attribution:c.attr||'© IGN Géoplateforme'});
 }
@@ -220,6 +245,21 @@ function renderList(){
     range.oninput=()=>{S.op[id]=+range.value;LAY[id].setOpacity(S.op[id]/100);};
     range.onchange=saveState;
     top.onclick=()=>toTop(id);
+    if(c.grid&&S.on[id]){
+      const sc=+$('fScale').value,auto=sc/50;
+      const gs=document.createElement('div');gs.className='gset';
+      gs.innerHTML=`<label>Espacement <select>
+          <option value="auto">auto : ${auto} m (20 mm au 1:${sc.toLocaleString('fr-FR')})</option>
+          ${[100,200,250,300,500,1000].map(v=>`<option value="${v}">${v} m</option>`).join('')}
+        </select></label>
+        <label>Déclinaison <input type="number" step="0.1" min="-30" max="30" value="${S.grid.decl}" style="width:70px"> ° Est</label>
+        <small>+2,5° = nord magnétique dans l'Hérault en 2026 (modèle WMM). 0 = nord géographique.</small>`;
+      const [sel,inp]=[gs.querySelector('select'),gs.querySelector('input')];
+      sel.value=String(S.grid.space);
+      sel.onchange=()=>{S.grid.space=sel.value==='auto'?'auto':+sel.value;LAY.nord.redraw();saveState();};
+      inp.onchange=()=>{const v=parseFloat(String(inp.value).replace(',','.'));if(isFinite(v)){S.grid.decl=v;LAY.nord.redraw();saveState();}};
+      d.appendChild(gs);
+    }
     box.appendChild(d);
   });
 }
@@ -409,14 +449,17 @@ async function exportFrame(kind){
     for(let k=0;k<active.length;k++){ // du dessous vers le dessus
       const id=active[k],L=CAT.find(x=>x.id===id);
       ctx.globalAlpha=(S.op[id]??100)/100;
+      if(L.grid){ // lignes nord tracées à la résolution d'impression
+        const sp=gridSpacing()*ppm,dl=S.grid.decl*Math.PI/180,n=[Math.cos(dl),Math.sin(dl)],d=[Math.sin(dl),-Math.cos(dl)];
+        const cx=X0+WP/2,cy=Y0+HP/2,R=Math.hypot(WP,HP),K=Math.ceil(R/sp);
+        ctx.strokeStyle='#1450d2';ctx.lineWidth=mm(0.2);
+        for(let q=-K;q<=K;q++){const px=cx+q*sp*n[0],py=cy+q*sp*n[1];ctx.beginPath();ctx.moveTo(px-R*d[0],py-R*d[1]);ctx.lineTo(px+R*d[0],py+R*d[1]);ctx.stroke();}
+        continue;
+      }
       st(`Couche ${k+1}/${active.length} : ${L.nom}…`);
       fails+=await drawTiles(ctx,L,box,ppm,lat0,toXY,(d,t)=>st(`Couche ${k+1}/${active.length} : ${L.nom} (${d}/${t} morceaux)…`));
     }
     ctx.globalAlpha=1;
-    if($('fNorth').checked){
-      ctx.strokeStyle='rgba(0,70,200,.75)';ctx.lineWidth=mm(0.2);
-      for(let xm=Math.ceil(-halfW/500)*500;xm<=halfW;xm+=500){const X=X0+(xm+halfW)*ppm;ctx.beginPath();ctx.moveTo(X,Y0);ctx.lineTo(X,Y0+HP);ctx.stroke();}
-    }
     ctx.restore();
 
     // cadre, titre, échelle, nord, crédits
@@ -426,7 +469,7 @@ async function exportFrame(kind){
     const title=$('fTitle').value||'Carte CO';
     ctx.font=`bold ${mm(8)}px -apple-system,Arial,sans-serif`;ctx.fillText(title,mm(8),mm(12));
     ctx.font=`${mm(3.6)}px -apple-system,Arial,sans-serif`;
-    ctx.fillText(`Échelle 1:${scale.toLocaleString('fr-FR')}  ·  ${paper} ${orient==='l'?'paysage':'portrait'}${$('fNorth').checked?'  ·  lignes nord tous les 500 m':''}`,mm(8),mm(17.2));
+    ctx.fillText(`Échelle 1:${scale.toLocaleString('fr-FR')}  ·  ${paper} ${orient==='l'?'paysage':'portrait'}${S.on.nord?`  ·  lignes nord ${S.grid.decl?'magnétique (déclinaison '+String(S.grid.decl).replace('.',',')+'° E)':'géographique'} tous les ${gridSpacing()} m`:''}`,mm(8),mm(17.2));
     const nxp=mm(pw-14),nyp=mm(15);
     ctx.beginPath();ctx.moveTo(nxp,mm(5));ctx.lineTo(nxp+mm(2.2),nyp);ctx.lineTo(nxp,nyp-mm(2.5));ctx.lineTo(nxp-mm(2.2),nyp);ctx.closePath();ctx.fill();
     ctx.font=`bold ${mm(3.6)}px Arial`;ctx.fillText('N',nxp-mm(1.3),mm(4.2));
@@ -467,12 +510,15 @@ function capture(on){
 
 /* ---------- Démarrage ---------- */
 $('fOn').checked=S.frame.on;$('fPaper').value=S.frame.paper;$('fOrient').value=S.frame.orient;$('fScale').value=S.frame.scale;
-$('fTitle').value=S.frame.title||'Carte CO';$('fNorth').checked=S.frame.north!==false;
+$('fTitle').value=S.frame.title||'Carte CO';
 computeOrder();applyLayers();drawFrame();
 map.on('move',drawFrame);
 map.on('click',closeSheets);
 map.on('zoom move',updScale);updScale(); // toucher la carte ferme le panneau
 map.on('moveend',saveState);
+// recalcul du carroyage si on change beaucoup de latitude, ou d'échelle en mode auto
+map.on('moveend',()=>{const la=map.getCenter().lat;if(Math.abs(la-gridLat)>0.02){gridLat=la;if(map.hasLayer(LAY.nord))LAY.nord.redraw();}});
+$('fScale').addEventListener('change',()=>{if(S.grid.space==='auto'&&map.hasLayer(LAY.nord))LAY.nord.redraw();});
 </script>
 </body>
 </html>
