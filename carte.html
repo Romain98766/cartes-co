@@ -94,7 +94,7 @@
 
 <div id="sheet-layers" class="sheet ui">
   <h3>Couches <button onclick="closeSheets()">Fermer</button></h3>
-  <div class="info">Classées de la plus utile à la moins utile pour la course d'orientation. Coche pour afficher, la glissière règle la transparence. L'empilement est automatique (fonds dessous, relief au milieu, tracés dessus) ; « ⤒ Dessus » fait passer une couche par-dessus toutes les autres.</div>
+  <div class="info">Classées de la plus utile à la moins utile pour la course d'orientation. Coche pour afficher, la glissière règle la transparence. L'empilement est automatique (fonds dessous, relief au milieu, tracés dessus) ; « ⤒ Dessus » fait passer une couche par-dessus toutes les autres ; « Dessus ✕ » la remet à sa place.</div>
   <div id="lyrList"></div>
   <button class="btn wide" onclick="resetLayers()">Réinitialiser les couches</button>
 </div>
@@ -176,6 +176,7 @@ try{
     // nouvelles couches éventuelles ajoutées en bas de l'ordre mémorisé
     const known=new Set(S.order);for(const c of CAT)if(!known.has(c.id))S.order.unshift(c.id);
     S.order=S.order.filter(id=>CAT.some(c=>c.id===id));
+    S.pinned=Array.isArray(S.pinned)?S.pinned.filter(id=>CAT.some(c=>c.id===id)):[];
   }
 }catch(e){}
 function saveState(){
@@ -205,17 +206,17 @@ function applyLayers(){
 function renderList(){
   const box=$('lyrList');box.innerHTML='';
   // couche affichée la plus haute parmi celles cochées
-  const topId=S.order.slice().reverse().find(id=>S.on[id]);
+  const pinned=S.pinned||[];
   RANK.forEach((id,i)=>{
     const c=CAT.find(x=>x.id===id);
     const d=document.createElement('div');d.className='lyr'+(S.on[id]?' on':'');
-    const isTop=S.on[id]&&id===topId;
+    const isTop=pinned.includes(id); // couche mise « au-dessus » par toi
     d.innerHTML=`<input type="checkbox" ${S.on[id]?'checked':''}>
       <div class="nm"><span class="rk">${i+1}.</span>${c.nom}<small>${c.desc} · ${c.grp}</small></div>
-      <button class="ontop${isTop?' is':''}">${isTop?'Au-dessus':'⤒ Dessus'}</button>
+      <button class="ontop${isTop?' is':''}">${isTop?'Dessus ✕':'⤒ Dessus'}</button>
       <input type="range" min="5" max="100" step="5" value="${S.op[id]}">`;
     const [cb,range]=d.querySelectorAll('input');const top=d.querySelector('.ontop');
-    cb.onchange=()=>{S.on[id]=cb.checked;applyLayers();renderList();saveState();};
+    cb.onchange=()=>{S.on[id]=cb.checked;computeOrder();applyLayers();renderList();saveState();};
     range.oninput=()=>{S.op[id]=+range.value;LAY[id].setOpacity(S.op[id]/100);};
     range.onchange=saveState;
     top.onclick=()=>toTop(id);
@@ -223,11 +224,21 @@ function renderList(){
   });
 }
 // fait passer une couche au-dessus de toutes les autres (et l'affiche)
+/* Ordre d'empilement = ordre automatique, puis les couches mises « au-dessus » (la dernière tout en haut).
+   Une couche décochée perd sa place « au-dessus ». */
+function computeOrder(){
+  S.pinned=(S.pinned||[]).filter(id=>S.on[id]);
+  S.order=CAT.map(c=>c.id).filter(id=>!S.pinned.includes(id)).concat(S.pinned);
+}
+// 1er appui : passe la couche au-dessus de toutes les autres. 2e appui (« Dessus ✕ ») : la remet à sa place normale.
 function toTop(id){
-  S.order=S.order.filter(x=>x!==id).concat(id);S.on[id]=true;
+  S.pinned=S.pinned||[];
+  if(S.pinned.includes(id))S.pinned=S.pinned.filter(x=>x!==id);
+  else{S.pinned=S.pinned.filter(x=>x!==id).concat(id);S.on[id]=true;}
+  computeOrder();
   applyLayers();renderList();saveState();
 }
-function resetLayers(){const d=defaults();/* ordre d'empilement automatique */S.order=d.order;S.on=d.on;S.op=d.op;applyLayers();renderList();saveState();}
+function resetLayers(){const d=defaults();/* ordre d'empilement automatique */S.pinned=[];S.on=d.on;S.op=d.op;computeOrder();applyLayers();renderList();saveState();}
 
 function openSheet(n){
   closeSheets();$('sheet-'+n).classList.add('open');
@@ -457,7 +468,7 @@ function capture(on){
 /* ---------- Démarrage ---------- */
 $('fOn').checked=S.frame.on;$('fPaper').value=S.frame.paper;$('fOrient').value=S.frame.orient;$('fScale').value=S.frame.scale;
 $('fTitle').value=S.frame.title||'Carte CO';$('fNorth').checked=S.frame.north!==false;
-applyLayers();drawFrame();
+computeOrder();applyLayers();drawFrame();
 map.on('move',drawFrame);
 map.on('click',closeSheets);
 map.on('zoom move',updScale);updScale(); // toucher la carte ferme le panneau
