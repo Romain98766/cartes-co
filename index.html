@@ -409,19 +409,25 @@ async function drawRaster(ctx,kind,box,ppm,lat0,toXY){
   while(range()>600&&z>10)z--; // limite du nombre de tuiles
   const total=(tx1-tx0+1)*(ty1-ty0+1);let done=0,fails=0;
   ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
-  const jobs=[];
-  for(let x=tx0;x<=tx1;x++)for(let y=ty0;y<=ty1;y++){
-    jobs.push((async()=>{
+  // file d'attente : 6 téléchargements simultanés maximum, 3 essais par tuile
+  const queue=[];
+  for(let x=tx0;x<=tx1;x++)for(let y=ty0;y<=ty1;y++)queue.push([x,y]);
+  const worker=async()=>{
+    while(queue.length){
+      const [x,y]=queue.shift();
       let img=null;
-      for(let essai=1;essai<=2&&!img;essai++){try{img=await loadImg(R.url(z,x,y));}catch(e){await sleep(800);}}
+      for(let essai=1;essai<=3&&!img;essai++){
+        try{img=await loadImg(R.url(z,x,y));}
+        catch(e){await sleep(700*essai);}
+      }
       done++;if(done%10===0)status(`Fond ${R.nom} : ${done}/${total} tuiles…`);
-      if(!img){fails++;return;}
+      if(!img){fails++;continue;}
       const [x1,y1]=toXY(tileLat(y,z),tileLon(x,z));
       const [x2,y2]=toXY(tileLat(y+1,z),tileLon(x+1,z));
       ctx.drawImage(img,x1,y1,x2-x1+0.6,y2-y1+0.6);
-    })());
-  }
-  await Promise.all(jobs);
+    }
+  };
+  await Promise.all(Array.from({length:6},worker));
   if(fails===total)throw new Error('fond '+R.nom+' indisponible');
   return fails;
 }
