@@ -64,6 +64,7 @@
     <option value="co" selected>Style course d'orientation (données IGN BD TOPO)</option>
     <option value="scan25">Carte IGN Top 25 (randonnée)</option>
     <option value="plan">Plan IGN</option>
+    <option value="ortho">Photo aérienne IGN (BD ORTHO) + sentiers</option>
   </select>
   <div class="row">
     <div><label>Papier</label><select id="paper"><option value="A4">A4</option><option value="A3">A3</option></select></div>
@@ -84,7 +85,7 @@
   <canvas id="cv" width="10" height="10"></canvas>
   <button id="pdf" onclick="exportPDF()" disabled>Télécharger / partager le PDF</button>
   <button id="png" class="sec" onclick="exportPNG()" disabled>Enregistrer en image (PNG)</button>
-  <div class="note">Données : IGN Géoplateforme (BD TOPO®, SCAN 25®, Plan IGN) · secours OpenStreetMap (© contributeurs, ODbL) · altitudes AWS Terrain Tiles. Carte non relevée sur le terrain : à vérifier avant usage. Nord géographique (pas magnétique).</div>
+  <div class="note">Données : IGN Géoplateforme (BD TOPO®, SCAN 25®, Plan IGN, BD ORTHO®) · secours OpenStreetMap (© contributeurs, ODbL) · altitudes AWS Terrain Tiles. Carte non relevée sur le terrain : à vérifier avant usage. Nord géographique (pas magnétique).</div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -393,7 +394,9 @@ const RASTERS={
   scan25:{maxZ:16,nom:'IGN SCAN 25®',
     url:(z,x,y)=>`https://data.geopf.fr/private/wmts?apikey=ign_scan_ws&SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=GEOGRAPHICALGRIDSYSTEMS.MAPS.SCAN25TOUR&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX=${z}&TILEROW=${y}&TILECOL=${x}&FORMAT=image/jpeg`},
   plan:{maxZ:18,zOffset:-1,nom:'Plan IGN', // un zoom de moins = textes 2x plus gros à l'impression
-    url:(z,x,y)=>`https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX=${z}&TILEROW=${y}&TILECOL=${x}&FORMAT=image/png`}
+    url:(z,x,y)=>`https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX=${z}&TILEROW=${y}&TILECOL=${x}&FORMAT=image/png`},
+  ortho:{maxZ:19,nom:'IGN BD ORTHO®',
+    url:(z,x,y)=>`https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=ORTHOIMAGERY.ORTHOPHOTOS&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX=${z}&TILEROW=${y}&TILECOL=${x}&FORMAT=image/jpeg`}
 };
 async function drawRaster(ctx,kind,box,ppm,lat0,toXY){
   const R=RASTERS[kind];
@@ -483,9 +486,10 @@ async function generate(){
     status('Téléchargement du relief…');
     const elevAt=await getElevation(latMin,latMax,lonMin,lonMax);
 
-    // Données vectorielles (uniquement pour le style CO) : IGN d'abord, OSM en secours
+    // Données vectorielles (style CO et photo aérienne) : IGN d'abord, OSM en secours
     let data=emptyData(),source='aucune';
-    if(fond==='co'){
+    const needVector=fond==='co'||fond==='ortho';
+    if(needVector){
       status('Téléchargement des chemins, bois et bâtiments (IGN BD TOPO)…');
       try{data=await getIGN(latMin,lonMin,latMax,lonMax);source='ign';}
       catch(e1){
@@ -513,12 +517,15 @@ async function generate(){
     if(fond!=='co'){
       status(`Téléchargement du fond ${RASTERS[fond].nom}…`);
       rasterFails=await drawRaster(ctx,fond,{latMin,latMax,lonMin,lonMax},ppm,lat0,toXY);
+      // photo éclaircie pour qu'elle reste lisible à l'impression et que les traits ressortent
+      if(fond==='ortho'){ctx.fillStyle='rgba(255,255,255,0.18)';ctx.fillRect(X0,Y0,WP,HP);}
       status('Dessin de la carte…');
     }
+    const halo=fond==='ortho'; // liseré blanc autour des traits sur la photo
 
     // --- surfaces (style CO)
     const fillColors={open:'#fde9b4',resid:'#f1dcc0',woodopen:'#e6f2d6',wood:'#d3eabb',scrub:'#b9dc8f',rock:'#c9c9c9',water:'#74c6ee'};
-    for(const k of ['open','resid','woodopen','wood','scrub','rock','water']){
+    for(const k of (fond==='co'?['open','resid','woodopen','wood','scrub','rock','water']:[])){
       ctx.fillStyle=fillColors[k];
       for(const f of data.fills[k]){
         ctx.beginPath();
@@ -545,7 +552,7 @@ async function generate(){
       const cx=i=>X0+i*gp,cy=j=>Y0+j*gp;
       const indexStep=eq*5;
       const startL=Math.ceil(zmin/eq)*eq;
-      ctx.strokeStyle='#c4621c';
+      ctx.strokeStyle=fond==='ortho'?'#ff9a3c':'#c4621c';
       const levels=[];for(let L=startL;L<=zmax;L+=eq)levels.push(Math.round(L*100)/100);
       for(const idx of [false,true]){
         ctx.beginPath();
@@ -602,14 +609,15 @@ async function generate(){
     const sorted=data.lines.slice().sort((a,b)=>ORDER.indexOf(a.style)-ORDER.indexOf(b.style));
     for(const {style,pts} of sorted){
       const s=STY[style];if(!s)continue;
+      if(halo){ctx.strokeStyle='rgba(255,255,255,.85)';ctx.lineWidth=mm(s.w+0.35);ctx.setLineDash([]);path(pts);ctx.stroke();}
       ctx.strokeStyle=s.c;ctx.lineWidth=mm(s.w);
       ctx.setLineDash(s.d?s.d.map(mm):[]);
       path(pts);ctx.stroke();
     }
     ctx.setLineDash([]);
     // bâtiments
-    ctx.fillStyle='#000';
-    for(const b of data.buildings){path(b);ctx.closePath();ctx.fill();}
+    ctx.fillStyle='#000';ctx.strokeStyle='#fff';ctx.lineWidth=mm(0.25);
+    for(const b of data.buildings){path(b);ctx.closePath();if(halo)ctx.stroke();ctx.fill();}
     // sommets (OSM uniquement)
     ctx.fillStyle='#000';ctx.font=`${mm(2.6)}px -apple-system,Arial,sans-serif`;
     for(const p of data.peaks){
@@ -655,19 +663,22 @@ async function generate(){
     ctx.fillText(seg*3+' m',mm(8)+3*(seg*1000/scale)*pxmm-mm(2.4),mm(sy)-mm(1));
     const credit=fond==='scan25'?'Fond © IGN – SCAN 25®'
       :fond==='plan'?'Fond © IGN – Plan IGN'
+      :fond==='ortho'?'Photo © IGN – BD ORTHO®'+(source==='ign'?' · données IGN BD TOPO®':source==='osm'?' · tracés OpenStreetMap (ODbL)':'')
       :source==='ign'?'Données IGN BD TOPO® (Licence Ouverte Etalab)'
       :source==='osm'?'Fond OpenStreetMap (© contributeurs, ODbL)':'Relief seul';
     ctx.font=`${mm(2.5)}px Arial`;ctx.fillStyle='#333';
     ctx.fillText(credit+' · altitudes AWS Terrain Tiles · carte non relevée sur le terrain · nord géographique',mm(8),mm(ph-2.5));
     ctx.fillText(`Centre : ${lat0.toFixed(5)}, ${lon0.toFixed(5)}`,mm(pw-52),mm(sy+3.2));
 
-    const fondTag={co:'CO',scan25:'IGN25',plan:'PlanIGN'}[fond];
+    const fondTag={co:'CO',scan25:'IGN25',plan:'PlanIGN',ortho:'Photo'}[fond];
     lastCanvas=cv;lastName=(title.replace(/[^\w\-]+/g,'_')||'carte')+'_'+fondTag+'_1-'+scale+'_'+paper;
     $('pdf').disabled=false;$('png').disabled=false;
 
     const alt=`${Math.round(zmin)}–${Math.round(zmax)} m d'altitude`;
     if(fond==='co'&&source==='aucune')
       status(`⚠️ Carte avec le relief seulement : ni l'IGN ni OpenStreetMap ne répondent. Réessaie dans quelques minutes pour la carte complète.`,true);
+    else if(fond==='ortho'&&source==='aucune')
+      status(`⚠️ Photo aérienne prête, mais sans les sentiers : ni l'IGN ni OpenStreetMap ne répondent. Réessaie dans quelques minutes.`,true);
     else if(rasterFails>0)
       status(`Carte prête (${alt}), mais ${rasterFails} morceau(x) du fond IGN n'ont pas chargé (zones blanches). Relance « Générer » pour réessayer.`,true);
     else{
