@@ -355,10 +355,101 @@ function isoElev(X,Y){ // altitude interpolée en coordonnées monde
   return v(i,j)*(1-ax)*(1-ay)+v(i+1,j)*ax*(1-ay)+v(i,j+1)*(1-ax)*ay+v(i+1,j+1)*ax*ay;
 }
 
+/* ----- végétation déduite de la photo aérienne INFRAROUGE de l'IGN (BD ORTHO IRC) -----
+   Dans l'image infrarouge : rouge = proche infrarouge, vert = rouge visible.
+   Indice de végétation NDVI = (PIR - R) / (PIR + R) : élevé = végétation vigoureuse.
+   Texture (écart-type du PIR) : forte = grands arbres avec ombres (forêt courable),
+   faible = couvert bas et serré (maquis, garrigue dense). Approximation à vérifier sur le terrain. */
+const VEG={raw:new Map()};
+const VEGP={t0:0.12,t1:0.25,t2:0.40,tex:18};
+// classes : 0 terrain ouvert, 1 semi-ouvert, 2 forêt courable, 3 végétation gênante, 4 végétation très dense, 255 inconnu
+async function vegRaw(zi,x,y){
+  const key=zi+'/'+x+'/'+y;
+  if(VEG.raw.has(key))return VEG.raw.get(key);
+  const p=(async()=>{
+    try{
+      const url=`https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=ORTHOIMAGERY.ORTHOPHOTOS.IRC&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX=${zi}&TILEROW=${y}&TILECOL=${x}&FORMAT=image/jpeg`;
+      const bm=await fetchTile(url);if(!bm)return null;
+      const c=document.createElement('canvas');c.width=c.height=256;
+      const g=c.getContext('2d',{willReadFrequently:true});g.drawImage(bm,0,0);
+      const d=g.getImageData(0,0,256,256).data;
+      const B=zi>=17?4:zi===16?2:1,n=256/B,cls=new Uint8Array(n*n);
+      for(let by=0;by<n;by++)for(let bx=0;bx<n;bx++){
+        let s=0,sn=0,s2=0,c2=0;
+        for(let yy=0;yy<B;yy++)for(let xx=0;xx<B;xx++){
+          const i=((by*B+yy)*256+bx*B+xx)*4,nir=d[i],r=d[i+1];
+          s+=(nir-r)/(nir+r+1);sn+=nir;s2+=nir*nir;c2++;
+        }
+        const nd=s/c2,m=sn/c2,sd=Math.sqrt(Math.max(0,s2/c2-m*m));
+        // en zoom faible (blocs d'1 pixel) la texture n'est pas mesurable : on se fie au NDVI seul
+        const smooth=B>1?sd<VEGP.tex:nd>=VEGP.t2+0.04;
+        cls[by*n+bx]=nd<VEGP.t0?0:nd<VEGP.t1?1:smooth?(nd>=VEGP.t2+0.04?4:nd>=VEGP.t2?3:2):2;
+      }
+      return{n,cls};
+    }catch(e){return null;}
+  })();
+  VEG.raw.set(key,p);
+  const v=await p;VEG.raw.set(key,v);return v;
+}
+// Classes lissées (filtre majoritaire 5x5, deux passes) pour la tuile (z,x,y), avec les tuiles voisines pour éviter les coutures
+async function vegTile(z,x,y){
+  const zi=Math.min(17,z),f=2**(z-zi),px=Math.floor(x/f),py=Math.floor(y/f);
+  const jobs=[];for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++)jobs.push(vegRaw(zi,px+dx,py+dy));
+  const T=await Promise.all(jobs);
+  const C=T[4];if(!C)return null;
+  const n=C.n,M=3*n;let a=new Uint8Array(M*M).fill(255);
+  T.forEach((t,k)=>{if(!t)return;const ox=(k%3)*n,oy=Math.floor(k/3)*n;for(let j=0;j<n;j++)for(let i=0;i<n;i++)a[(oy+j)*M+ox+i]=t.cls[j*n+i];});
+  const lo=n-6,hi=2*n+6,cnt=new Uint16Array(5);
+  for(let pass=0;pass<2;pass++){
+    const b=a.slice();
+    for(let j=Math.max(2,lo);j<Math.min(M-2,hi);j++)for(let i=Math.max(2,lo);i<Math.min(M-2,hi);i++){
+      cnt.fill(0);
+      for(let dj=-2;dj<=2;dj++)for(let di=-2;di<=2;di++){const v=a[(j+dj)*M+i+di];if(v<5)cnt[v]++;}
+      let best=a[j*M+i],bc=-1;for(let k=0;k<5;k++)if(cnt[k]>bc){bc=cnt[k];best=k;}
+      if(bc>0)b[j*M+i]=best;
+    }
+    a=b;
+  }
+  const cls=new Uint8Array(n*n);
+  for(let j=0;j<n;j++)for(let i=0;i<n;i++)cls[j*n+i]=a[(n+j)*M+n+i];
+  return{n,cls,f,sx:x-px*f,sy:y-py*f};
+}
+
+/* ----- courbes de niveau : segments enchaînés en lignes continues puis adoucies ----- */
+function contourPolylines(G,nx,ny,Lv){
+  const pts=new Map(),adj=new Map();
+  const add=(k1,p1,k2,p2)=>{pts.set(k1,p1);pts.set(k2,p2);
+    (adj.get(k1)||adj.set(k1,[]).get(k1)).push(k2);(adj.get(k2)||adj.set(k2,[]).get(k2)).push(k1);};
+  for(let j=0;j<ny-1;j++)for(let i=0;i<nx-1;i++){
+    const a=G[j*nx+i],b=G[j*nx+i+1],c=G[(j+1)*nx+i+1],d=G[(j+1)*nx+i];
+    if(!(isFinite(a)&&isFinite(b)&&isFinite(c)&&isFinite(d)))continue;
+    const cs=(a>=Lv?8:0)|(b>=Lv?4:0)|(c>=Lv?2:0)|(d>=Lv?1:0);if(cs===0||cs===15)continue;
+    const E={T:[(j*nx+i)*2,()=>[i+(Lv-a)/(b-a),j]],B:[((j+1)*nx+i)*2,()=>[i+(Lv-d)/(c-d),j+1]],
+             L:[(j*nx+i)*2+1,()=>[i,j+(Lv-a)/(d-a)]],R:[(j*nx+i+1)*2+1,()=>[i+1,j+(Lv-b)/(c-b)]]};
+    const sg=(p,q)=>add(E[p][0],E[p][1](),E[q][0],E[q][1]());
+    switch(cs){case 1:case 14:sg('B','L');break;case 2:case 13:sg('R','B');break;case 3:case 12:sg('L','R');break;
+      case 4:case 11:sg('T','R');break;case 5:sg('T','R');sg('B','L');break;case 6:case 9:sg('T','B');break;
+      case 7:case 8:sg('T','L');break;case 10:sg('T','L');sg('R','B');break;}
+  }
+  const used=new Set(),lines=[];
+  const walk=start=>{const line=[start];used.add(start);let cur=start;
+    for(;;){const nb=(adj.get(cur)||[]).find(k=>!used.has(k));if(nb===undefined)break;used.add(nb);line.push(nb);cur=nb;}
+    return line;};
+  for(const [k,v] of adj)if(v.length===1&&!used.has(k))lines.push(walk(k)); // lignes ouvertes
+  for(const k of adj.keys())if(!used.has(k)){const l=walk(k);l.push(l[0]);lines.push(l);} // boucles fermées
+  return lines.map(l=>{
+    let p=l.map(k=>pts.get(k));
+    // adoucissement de Chaikin (une passe), extrémités conservées
+    if(p.length>3){const q=[p[0]];for(let i=0;i<p.length-1;i++){const A=p[i],B=p[i+1];q.push([0.75*A[0]+0.25*B[0],0.75*A[1]+0.25*B[1]],[0.25*A[0]+0.75*B[0],0.25*A[1]+0.75*B[1]]);}q.push(p[p.length-1]);p=q;}
+    return p;
+  });
+}
+
 /* ----- dessin d'une tuile (z,x,y) dans un contexte 2D, R = pixels de canevas par pixel de tuile ----- */
 const ISOC={yellow:'#FFDD9A',open:'#FFBA36',white:'#FFFFFF',green1:'#C5E8B7',green2:'#8BD27A',green3:'#3DB54A',
   blue:'#00A0E0',water:'#7FD0F5',brown:'#D15C00',black:'#000000',building:'#5A5A5A',road:'#EDB777'};
-function paintIso(ctx,z,x,y,R){
+const VEGCOL=[[0xFF,0xBA,0x36],[0xFF,0xDD,0x9A],[0xFF,0xFF,0xFF],[0x8B,0xD2,0x7A],[0x3D,0xB5,0x4A]];
+function paintIso(ctx,z,x,y,R,veg){
   const N=256*2**z,ox=x*256,oy=y*256;
   const latC=wLat((y+0.5)/2**z);
   const mPerPx=40075016.686*Math.cos(latC*Math.PI/180)/N;
@@ -381,62 +472,71 @@ function paintIso(ctx,z,x,y,R){
     if(p&&p.setTransform)p.setTransform(new DOMMatrix().translate(-((ox*R)%s),-((oy*R)%s)));
     return p;};
 
-  // 1. fond : terrain semi-découvert (jaune pâle)
-  ctx.fillStyle=ISOC.yellow;ctx.fillRect(0,0,W,H);
+  // 1. végétation
+  if(veg){
+    // chaque classe est agrandie en douceur puis seuillée : on obtient des taches aux bords arrondis
+    const n=veg.n,cs=n/veg.f,c0x=veg.sx*cs,c0y=veg.sy*cs;
+    const out=ctx.createImageData(W,H),o=out.data;
+    for(let i=0;i<o.length;i+=4){o[i]=o[i+1]=o[i+2]=255;o[i+3]=255;}
+    const mask=document.createElement('canvas');mask.width=mask.height=n;const mg=mask.getContext('2d');
+    const tmp=document.createElement('canvas');tmp.width=W;tmp.height=H;const tg=tmp.getContext('2d',{willReadFrequently:true});
+    tg.imageSmoothingEnabled=true;tg.imageSmoothingQuality='high';
+    for(const k of [0,1,3,4]){
+      const md=mg.createImageData(n,n);let any=false;
+      for(let i=0;i<n*n;i++)if(veg.cls[i]===k){md.data[i*4+3]=255;any=true;}
+      if(!any)continue;
+      mg.putImageData(md,0,0);tg.clearRect(0,0,W,H);
+      tg.drawImage(mask,c0x,c0y,cs,cs,0,0,W,H);
+      const t=tg.getImageData(0,0,W,H).data,col=VEGCOL[k];
+      for(let i=3;i<t.length;i+=4)if(t[i]>=128){o[i-3]=col[0];o[i-2]=col[1];o[i-1]=col[2];}
+    }
+    ctx.putImageData(out,0,0);
+  }else{
+    // secours sans photo infrarouge : végétation de la BD TOPO
+    ctx.fillStyle=ISOC.yellow;ctx.fillRect(0,0,W,H);
+    fill('scrub',ISOC.green1);fill('forest',ISOC.white);fill('dense',ISOC.green2);
+  }
   // 2. vigne (jaune + rayures vertes), verger (jaune + points verts)
   fill('vine',ISOC.open);
   fill('vine',pattern((g,s)=>{g.fillStyle=ISOC.green3;g.fillRect(0,0,Math.max(1,s*0.3),s);},1.2));
   fill('orchard',ISOC.open);
   fill('orchard',pattern((g,s)=>{g.fillStyle=ISOC.green3;g.beginPath();g.arc(s/2,s/2,Math.max(0.8,s*0.22),0,7);g.fill();},1.5));
-  // 3. végétation : landes (vert clair), forêt courable (blanc), haies (vert moyen)
-  fill('scrub',ISOC.green1);
-  fill('forest',ISOC.white);
-  fill('dense',ISOC.green2);
-  // 4. eau
+  // 3. eau
   fill('water',ISOC.water);
   if(by.water){ctx.strokeStyle=ISOC.black;ctx.lineWidth=lw(0.14);for(const f of by.water){ctx.beginPath();trace(f,true);ctx.stroke();}}
 
-  // 5. courbes de niveau (brun), maîtresse toutes les 5 courbes
+  // 4. courbes de niveau continues (brun), maîtresse toutes les 5 courbes
   const eq=isoEq(),step=Math.max(2,Math.round(4/mPerPx));
-  const i0=Math.floor(ox/step)-1,i1=Math.ceil((ox+256)/step)+1,j0=Math.floor(oy/step)-1,j1=Math.ceil((oy+256)/step)+1;
+  const i0=Math.floor(ox/step)-2,i1=Math.ceil((ox+256)/step)+2,j0=Math.floor(oy/step)-2,j1=Math.ceil((oy+256)/step)+2;
   const nx=i1-i0+1,ny=j1-j0+1,G=new Float32Array(nx*ny);let zmin=1e9,zmax=-1e9;
   for(let j=0;j<ny;j++)for(let i=0;i<nx;i++){const v=isoElev((i0+i)*step/N,(j0+j)*step/N);G[j*nx+i]=v;if(v<zmin)zmin=v;if(v>zmax)zmax=v;}
   if(isFinite(zmin)&&isFinite(zmax)&&zmax>zmin){
-    const cx=i=>((i0+i)*step-ox)*R,cy=j=>((j0+j)*step-oy)*R;
-    for(const idx of [false,true]){
-      ctx.beginPath();
-      for(let Lv=Math.ceil(zmin/eq)*eq;Lv<=zmax;Lv+=eq){
-        const isIdx=Math.abs(Lv/(eq*5)-Math.round(Lv/(eq*5)))<1e-6;if(isIdx!==idx)continue;
-        for(let j=0;j<ny-1;j++)for(let i=0;i<nx-1;i++){
-          const a=G[j*nx+i],b=G[j*nx+i+1],c=G[(j+1)*nx+i+1],d=G[(j+1)*nx+i];
-          const cs=(a>=Lv?8:0)|(b>=Lv?4:0)|(c>=Lv?2:0)|(d>=Lv?1:0);if(cs===0||cs===15)continue;
-          const Pt={T:()=>[cx(i+(Lv-a)/(b-a)),cy(j)],R:()=>[cx(i+1),cy(j+(Lv-b)/(c-b))],B:()=>[cx(i+(Lv-d)/(c-d)),cy(j+1)],L:()=>[cx(i),cy(j+(Lv-a)/(d-a))]};
-          const sg=(p,q)=>{const u=Pt[p](),v=Pt[q]();ctx.moveTo(u[0],u[1]);ctx.lineTo(v[0],v[1]);};
-          switch(cs){case 1:case 14:sg('B','L');break;case 2:case 13:sg('R','B');break;case 3:case 12:sg('L','R');break;
-            case 4:case 11:sg('T','R');break;case 5:sg('T','R');sg('B','L');break;case 6:case 9:sg('T','B');break;
-            case 7:case 8:sg('T','L');break;case 10:sg('T','L');sg('R','B');break;}
-        }
-      }
-      ctx.strokeStyle=ISOC.brown;ctx.lineWidth=lw(idx?0.25:0.14);ctx.lineCap='round';ctx.stroke();
+    const gx=g=>((i0+g)*step-ox)*R,gy=g=>((j0+g)*step-oy)*R;
+    ctx.strokeStyle=ISOC.brown;ctx.lineCap='round';ctx.lineJoin='round';ctx.setLineDash([]);
+    for(let Lv=Math.ceil(zmin/eq)*eq;Lv<=zmax;Lv+=eq){
+      const isIdx=Math.abs(Lv/(eq*5)-Math.round(Lv/(eq*5)))<1e-6;
+      ctx.lineWidth=lw(isIdx?0.25:0.14);ctx.beginPath();
+      for(const pl of contourPolylines(G,nx,ny,Lv)){pl.forEach((p,i)=>{const X=gx(p[0]),Y=gy(p[1]);i?ctx.lineTo(X,Y):ctx.moveTo(X,Y);});}
+      ctx.stroke();
     }
   }
-  // 6. talus (brun), cours d'eau (bleu)
+  // 5. talus (brun), cours d'eau (bleu)
   line('bank',ISOC.brown,0.37);
   line('stream',ISOC.blue,0.25,null,'round');
   line('streamI',ISOC.blue,0.18,[2,0.25]);
-  // 7. haies, murs, ruines, clôtures
+  // 6. haies, murs, ruines, clôtures
   line('hedge',ISOC.green3,0.45,null,'round');
   line('fence',ISOC.black,0.14);
   line('ruin',ISOC.black,0.14,[1,0.5]);
   line('wall',ISOC.black,0.18);
-  // 8. chemins et routes (noir), routes larges en double trait
+  // 7. chemins et routes (noir), routes larges en double trait
   line('spath',ISOC.black,0.18,[1,0.25]);
   line('path',ISOC.black,0.25,[2,0.25]);
   line('track',ISOC.black,0.35,[2,0.25]);
   line('road0',ISOC.black,0.35,null,'round');
   line('road1',ISOC.black,0.6,null,'round');line('road1',ISOC.road,0.4,null,'round');
   line('road2',ISOC.black,0.85,null,'round');line('road2',ISOC.road,0.6,null,'round');
-  // 9. bâtiments, carrières / falaises
+  // 8. bâtiments, carrières / falaises
   fill('building',ISOC.building);
   line('cliff',ISOC.black,0.35);
 }
@@ -451,9 +551,8 @@ const IsoLayer=L.GridLayer.extend({
         const v=map.getBounds(),n=2**coords.z;
         const tb=[coords.x/n,coords.y/n,(coords.x+1)/n,(coords.y+1)/n];
         const x0=Math.min(tb[0],wX(v.getWest())),x1=Math.max(tb[2],wX(v.getEast())),y0=Math.min(tb[1],wY(v.getNorth())),y1=Math.max(tb[3],wY(v.getSouth()));
-        await isoEnsure(x0,y0,x1,y1);
-        await isoElevEnsure(tb[0],tb[1],tb[2],tb[3]);
-        paintIso(t.getContext('2d'),coords.z,coords.x,coords.y,r);
+        const [,,veg]=await Promise.all([isoEnsure(x0,y0,x1,y1),isoElevEnsure(tb[0],tb[1],tb[2],tb[3]),vegTile(coords.z,coords.x,coords.y)]);
+        paintIso(t.getContext('2d'),coords.z,coords.x,coords.y,r,veg);
       }catch(e){console.warn('ISOM',e);}
       done(null,t);
     })();
@@ -463,9 +562,9 @@ const IsoLayer=L.GridLayer.extend({
 // Une tuile ISOM pour l'export (canevas hors écran)
 async function isoTileCanvas(z,x,y){
   const n=2**z;
-  await isoElevEnsure(x/n,y/n,(x+1)/n,(y+1)/n);
+  const [,veg]=await Promise.all([isoElevEnsure(x/n,y/n,(x+1)/n,(y+1)/n),vegTile(z,x,y)]);
   const c=document.createElement('canvas');c.width=c.height=256;
-  paintIso(c.getContext('2d'),z,x,y,1);
+  paintIso(c.getContext('2d'),z,x,y,1,veg);
   return c;
 }
 
@@ -598,7 +697,7 @@ function drawFrame(){
   const b=[[c.lat-f.Hm/2/M_LAT,c.lng-f.Wm/2/mx],[c.lat+f.Hm/2/M_LAT,c.lng+f.Wm/2/mx]];
   // tout ce qui est hors du cadre est grisé : on voit d'un coup d'œil ce qui sera imprimé
   const ring=[[b[0][0],b[0][1]],[b[1][0],b[0][1]],[b[1][0],b[1][1]],[b[0][0],b[1][1]]];
-  frameMask=L.polygon([[[-85,-180],[85,-180],[85,180],[-85,180]],ring],{stroke:false,fillColor:'#000',fillOpacity:0.28,interactive:false}).addTo(map);
+  frameMask=L.polygon([[[-85,-180],[85,-180],[85,180],[-85,180]],ring],{stroke:false,fillColor:'#fff',fillOpacity:0.55,interactive:false}).addTo(map);
   frameRect=L.rectangle(b,{color:'#d9650f',weight:3,dashArray:'8 6',fill:false,interactive:false}).addTo(map);
   frameTag=L.marker([b[1][0],b[0][1]],{interactive:false,keyboard:false,
     icon:L.divIcon({className:'',iconSize:null,iconAnchor:[0,24],
