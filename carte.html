@@ -766,7 +766,10 @@ function applyLayers(){
     const l=LAY[id],op=(S.op[id]??100)/100;
     if(S.on[id]&&!map.hasLayer(l)){
       l.addTo(map);
-      if(l._vec&&!l._styled){l._styled=true;vecStyle(l._vec).then(st=>{const m=l.getMaplibreMap();if(m)m.setStyle(st);}).catch(e=>{l._styled=false;console.warn(e);});}
+      // le style est mémorisé dans la couche : si elle est décochée puis recochée, elle repart avec le bon style
+      if(l._vec)vecStyle(l._vec).then(st=>{l.options.style=st;const m=l.getMaplibreMap();
+        let n=0;try{n=(m&&m.getStyle()&&m.getStyle().layers.length)||0;}catch(e){}
+        if(m&&!n)m.setStyle(st);}).catch(e=>console.warn(e));
     }
     if(!S.on[id]&&map.hasLayer(l))map.removeLayer(l);
     layerStyle(l,i+1,op);
@@ -818,6 +821,12 @@ function renderList(){
       sel.value=String(S.grid.space);
       sel.onchange=()=>{S.grid.space=sel.value==='auto'?'auto':+sel.value;LAY.nord.redraw();saveState();};
       inp.onchange=()=>{const v=parseFloat(String(inp.value).replace(',','.'));if(isFinite(v)){S.grid.decl=v;LAY.nord.redraw();saveState();}};
+      d.appendChild(gs);
+    }
+    if(id==='forest'&&S.on[id]){
+      const gs=document.createElement('div');gs.className='gset';
+      gs.innerHTML=`<details style="width:100%"><summary>Légende des couleurs (IGN)</summary>
+        <img src="https://data.geopf.fr/annexes/ressources/legendes/LANDCOVER.FORESTINVENTORY.V2-legend.png" alt="Légende BD Forêt" style="max-width:100%;margin-top:6px"></details>`;
       d.appendChild(gs);
     }
     if(c.iso&&S.on[id]){
