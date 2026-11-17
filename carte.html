@@ -34,8 +34,8 @@
   .lyr .nm{font-size:15px}
   .lyr .nm small{display:block;color:var(--muted);font-size:12px}
   .lyr .rk{display:inline-block;min-width:22px;color:var(--accent);font-weight:700}
-  .lyr .top{border:0;background:#efebe2;border-radius:8px;padding:6px 9px;font-size:13px;white-space:nowrap}
-  .lyr .top.is{background:#d9650f;color:#fff}
+  .lyr .ontop{border:0;background:#efebe2;border-radius:8px;padding:6px 9px;font-size:13px;white-space:nowrap}
+  .lyr .ontop.is{background:#d9650f;color:#fff}
   .lyr input[type=range]{grid-column:2/4;width:100%;display:none}
   .lyr.on input[type=range]{display:block}
   .row{display:flex;gap:8px}.row>*{flex:1}
@@ -55,6 +55,10 @@
   body.capture .ui{display:none!important}
   #exitCapture{position:fixed;top:calc(env(safe-area-inset-top) + 8px);right:8px;z-index:1100;display:none;border:0;border-radius:50%;width:34px;height:34px;background:rgba(255,255,255,.45);font-size:16px}
   body.capture #exitCapture{display:block}
+  .zbox{display:flex;gap:8px}
+  .zb{flex:1;font-size:22px;line-height:1;padding:8px 0;min-width:46px}
+  #scaleSel{font-size:15px;padding:10px 8px;appearance:none;-webkit-appearance:none;text-align:center}
+  #scaleLbl{position:fixed;left:10px;bottom:calc(env(safe-area-inset-bottom) + 38px);z-index:900;background:rgba(255,255,255,.9);border-radius:8px;padding:3px 8px;font-weight:700;font-size:15px;pointer-events:none}
   .leaflet-control-attribution{font-size:9px}
   .leaflet-bottom.leaflet-left{margin-bottom:env(safe-area-inset-bottom)}
 </style>
@@ -63,6 +67,7 @@
 <div id="map"></div>
 <div id="cross" class="ui"></div>
 <div id="north">N<br>↑</div>
+<div id="scaleLbl">1:10 000</div>
 
 <div class="top ui">
   <input id="q" placeholder="Chercher un lieu (Soumont, Grézac…)" enterkeyhint="search">
@@ -72,6 +77,16 @@
 <div id="results" class="ui"></div>
 
 <div class="side ui">
+  <div class="zbox"><button class="btn zb" onclick="map.zoomIn()" title="Zoomer">+</button><button class="btn zb" onclick="map.zoomOut()" title="Dézoomer">−</button></div>
+  <select id="scaleSel" class="btn" onchange="setScale(this.value)">
+    <option value="">Échelle…</option>
+    <option value="5000">1:5 000</option>
+    <option value="7500">1:7 500</option>
+    <option value="10000">1:10 000</option>
+    <option value="15000">1:15 000</option>
+    <option value="25000">1:25 000</option>
+    <option value="50000">1:50 000</option>
+  </select>
   <button class="btn" onclick="openSheet('layers')">🗂️ Couches</button>
   <button class="btn" onclick="openSheet('frame')">⬚ Cadre</button>
   <button class="btn main" onclick="capture(true)">📷 Capture</button>
@@ -151,7 +166,7 @@ function saveState(){
 }
 
 /* ---------- Carte ---------- */
-const map=L.map('map',{zoomControl:false,maxZoom:20,minZoom:5}).setView([S.view.lat,S.view.lon],S.view.z);
+const map=L.map('map',{zoomControl:false,maxZoom:20,minZoom:5,zoomSnap:0,zoomDelta:1,wheelPxPerZoomLevel:120}).setView([S.view.lat,S.view.lon],S.view.z);
 L.control.scale({imperial:false,position:'bottomleft',maxWidth:160}).addTo(map);
 map.attributionControl.setPrefix('');
 const LAY={};
@@ -178,9 +193,9 @@ function renderList(){
     const isTop=S.on[id]&&id===topId;
     d.innerHTML=`<input type="checkbox" ${S.on[id]?'checked':''}>
       <div class="nm"><span class="rk">${i+1}.</span>${c.nom}<small>${c.desc} · ${c.grp}</small></div>
-      <button class="top${isTop?' is':''}">${isTop?'Au-dessus':'⤒ Dessus'}</button>
+      <button class="ontop${isTop?' is':''}">${isTop?'Au-dessus':'⤒ Dessus'}</button>
       <input type="range" min="5" max="100" step="5" value="${S.op[id]}">`;
-    const [cb,range]=d.querySelectorAll('input');const top=d.querySelector('.top');
+    const [cb,range]=d.querySelectorAll('input');const top=d.querySelector('.ontop');
     cb.onchange=()=>{S.on[id]=cb.checked;applyLayers();renderList();saveState();};
     range.oninput=()=>{S.op[id]=+range.value;LAY[id].setOpacity(S.op[id]/100);};
     range.onchange=saveState;
@@ -247,6 +262,27 @@ function locate(){
   },()=>alert('Position refusée ou introuvable'),{enableHighAccuracy:true,timeout:10000});
 }
 
+/* ---------- Échelle 1:xxxx ----------
+   Base : 1 pixel écran CSS = 0,2646 mm (norme 96 ppp, celle utilisée à l'impression à 100 %). */
+const PX_M=0.0254/96;
+const PRESETS=[5000,7500,10000,15000,25000,50000];
+function mPerPx(){const c=map.getCenter();return 156543.03392*Math.cos(c.lat*Math.PI/180)/2**map.getZoom();}
+function scaleNow(){return mPerPx()/PX_M;}
+function fmtScale(s){
+  const p=PRESETS.find(v=>Math.abs(s-v)/v<0.02); // à 2 % près, on affiche l'échelle ronde
+  const r=p||(s<20000?Math.round(s/100)*100:Math.round(s/500)*500);
+  return '1:'+r.toLocaleString('fr-FR');
+}
+function setScale(v){
+  if(!v)return;const s=+v,c=map.getCenter();
+  const z=Math.log2(156543.03392*Math.cos(c.lat*Math.PI/180)/(s*PX_M));
+  map.setZoom(z);
+}
+function updScale(){
+  const s=scaleNow();$('scaleLbl').textContent=fmtScale(s);
+  const p=PRESETS.find(v=>Math.abs(s-v)/v<0.02);$('scaleSel').value=p?String(p):'';
+}
+
 /* ---------- Mode capture ---------- */
 function capture(on){
   closeSheets();$('results').innerHTML='';
@@ -257,7 +293,8 @@ function capture(on){
 $('fOn').checked=S.frame.on;$('fPaper').value=S.frame.paper;$('fOrient').value=S.frame.orient;$('fScale').value=S.frame.scale;
 applyLayers();drawFrame();
 map.on('move',drawFrame);
-map.on('click',closeSheets); // toucher la carte ferme le panneau
+map.on('click',closeSheets);
+map.on('zoom move',updScale);updScale(); // toucher la carte ferme le panneau
 map.on('moveend',saveState);
 </script>
 </body>
