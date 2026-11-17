@@ -83,6 +83,7 @@
 <div class="side ui">
   <div class="zbox"><button class="btn zb" onclick="map.zoomIn()" title="Zoomer">+</button><button class="btn zb" onclick="map.zoomOut()" title="Dézoomer">−</button></div>
   <select id="scaleSel" class="btn" onchange="setFrameScale(this.value)" title="Échelle de la carte imprimée">
+    <option value="2500">Cadre 1:2 500</option>
     <option value="5000">Cadre 1:5 000</option>
     <option value="7500">Cadre 1:7 500</option>
     <option value="10000">Cadre 1:10 000</option>
@@ -110,7 +111,7 @@
     <div><label class="f">Sens</label><select id="fOrient" onchange="frameChanged()"><option value="l">Paysage</option><option value="p">Portrait</option></select></div>
   </div>
   <label class="f">Échelle</label>
-  <select id="fScale" onchange="frameChanged()"><option value="5000">1 / 5 000</option><option value="7500">1 / 7 500</option><option value="10000" selected>1 / 10 000</option><option value="15000">1 / 15 000</option><option value="25000">1 / 25 000</option></select>
+  <select id="fScale" onchange="frameChanged()"><option value="2500">1 / 2 500</option><option value="5000">1 / 5 000</option><option value="7500">1 / 7 500</option><option value="10000" selected>1 / 10 000</option><option value="15000">1 / 15 000</option><option value="25000">1 / 25 000</option></select>
   <div class="info" id="fInfo"></div>
   <label class="f">Titre imprimé sur la carte</label>
   <input id="fTitle" value="Carte CO" onchange="saveState()" style="width:100%;font-size:16px;padding:10px;border:1px solid var(--line);border-radius:10px">
@@ -370,7 +371,7 @@ function locate(){
 /* ---------- Échelle 1:xxxx ----------
    Base : 1 pixel écran CSS = 0,2646 mm (norme 96 ppp, celle utilisée à l'impression à 100 %). */
 const PX_M=0.0254/96;
-const PRESETS=[5000,7500,10000,15000,25000,50000];
+const PRESETS=[2500,5000,7500,10000,15000,25000,50000];
 function mPerPx(){const c=map.getCenter();return 156543.03392*Math.cos(c.lat*Math.PI/180)/2**map.getZoom();}
 function scaleNow(){return mPerPx()/PX_M;}
 function fmtScale(s){
@@ -445,6 +446,8 @@ async function drawTiles(ctx,L,box,ppm,lat0,toXY,progress){
   return fails;
 }
 
+// Longueur d'un segment de la barre d'échelle (3 segments, environ 1 à 2 cm chacun sur papier)
+function segFor(scale){return{2500:25,5000:50,7500:100,10000:100,15000:200,25000:250}[scale]||Math.round(scale/100);}
 let exporting=false;
 async function exportFrame(kind){
   if(exporting)return;exporting=true;
@@ -498,7 +501,7 @@ async function exportFrame(kind){
     const nxp=mm(pw-14),nyp=mm(15);
     ctx.beginPath();ctx.moveTo(nxp,mm(5));ctx.lineTo(nxp+mm(2.2),nyp);ctx.lineTo(nxp,nyp-mm(2.5));ctx.lineTo(nxp-mm(2.2),nyp);ctx.closePath();ctx.fill();
     ctx.font=`bold ${mm(3.6)}px Arial`;ctx.fillText('N',nxp-mm(1.3),mm(4.2));
-    const seg=scale<=5000?50:scale<=15000?100:250,sy=ph-9,sw=seg*1000/scale*pxmm;
+    const seg=segFor(scale),sy=ph-9,sw=seg*1000/scale*pxmm; // barre d'échelle adaptée à l'échelle choisie
     for(let k=0;k<3;k++){ctx.fillStyle=k%2?'#fff':'#000';ctx.fillRect(mm(8)+k*sw,mm(sy),sw,mm(1.6));ctx.strokeStyle='#000';ctx.lineWidth=mm(0.2);ctx.strokeRect(mm(8)+k*sw,mm(sy),sw,mm(1.6));}
     ctx.fillStyle='#000';ctx.font=`${mm(2.8)}px Arial`;
     ctx.fillText('0',mm(8)-mm(0.6),mm(sy)-mm(1));ctx.fillText(seg+'',mm(8)+sw-mm(1.2),mm(sy)-mm(1));ctx.fillText(seg*3+' m',mm(8)+3*sw-mm(2.4),mm(sy)-mm(1));
