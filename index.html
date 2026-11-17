@@ -33,6 +33,7 @@
 <body>
 <h1>Cartes de course d'orientation</h1>
 <div class="sub">Courbes de niveau + sentiers + bois (IGN). Export PDF A4 / A3.</div>
+<a href="carte.html" style="display:block;text-decoration:none;margin-bottom:12px"><button class="sec" style="margin:0">🗺️ Ouvrir la carte interactive (couches, cadrage, capture)</button></a>
 
 <div class="card">
   <h2>1 · Choisir le lieu</h2>
@@ -708,6 +709,21 @@ function exportPDF(){
     navigator.share({files:[file],title:name}).catch(()=>{});
   }else doc.save(name);
 }
+/* ---------- Réglages reçus depuis la carte interactive (carte.html) ---------- */
+(function(){
+  const p=new URLSearchParams(location.search);
+  const la=parseFloat(p.get('lat')),lo=parseFloat(p.get('lon'));
+  if(!isFinite(la)||!isFinite(lo))return;
+  setCenter(la,lo,'cadre choisi sur la carte interactive');
+  for(const k of ['scale','paper','orient','fond']){
+    const v=p.get(k),sel=$(k);
+    if(v&&sel&&[...sel.options].some(o=>o.value===v))sel.value=v;
+  }
+  if(p.get('fond'))fondChange();
+  $('title').value=p.get('title')||'Carte CO';
+  status('Cadre récupéré depuis la carte interactive : choisis le fond puis « Générer la carte ».');
+})();
+
 function exportPNG(){
   if(!lastCanvas)return;
   lastCanvas.toBlob(b=>{

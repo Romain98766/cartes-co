@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Carte interactive – Cartes CO</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root{--ink:#1d2b24;--accent:#d9650f;--muted:#6b756f;--line:#ddd6c8;--card:#fff}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;font:16px/1.35 -apple-system,system-ui,Helvetica,Arial,sans-serif;color:var(--ink);background:#e8e4da}
+  #map{position:fixed;inset:0;background:#e8e4da}
+  /* Barre de recherche */
+  .top{position:fixed;top:calc(env(safe-area-inset-top) + 10px);left:10px;right:10px;z-index:1000;display:flex;gap:6px}
+  .top input{flex:1;min-width:0;font-size:16px;padding:11px 12px;border:1px solid var(--line);border-radius:12px;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.15)}
+  .btn{border:0;border-radius:12px;background:#fff;color:var(--ink);font-size:15px;font-weight:600;padding:10px 12px;box-shadow:0 2px 8px rgba(0,0,0,.18);cursor:pointer;white-space:nowrap}
+  .btn.main{background:var(--accent);color:#fff}
+  #results{position:fixed;top:calc(env(safe-area-inset-top) + 60px);left:10px;right:10px;z-index:1001;display:flex;flex-direction:column;gap:4px}
+  #results button{text-align:left;border:0;border-radius:10px;padding:10px;background:#fff;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,.15)}
+  /* Boutons d'action */
+  .side{position:fixed;right:10px;bottom:calc(env(safe-area-inset-bottom) + 18px);z-index:1000;display:flex;flex-direction:column;gap:8px}
+  /* Panneau du bas */
+  .sheet{position:fixed;left:0;right:0;bottom:0;z-index:1002;background:var(--card);border-radius:16px 16px 0 0;box-shadow:0 -4px 16px rgba(0,0,0,.2);max-height:62vh;overflow:auto;padding:12px 14px calc(env(safe-area-inset-bottom) + 14px);display:none}
+  .sheet.open{display:block}
+  .sheet h3{margin:2px 0 8px;font-size:15px;text-transform:uppercase;letter-spacing:.04em;color:var(--accent);display:flex;justify-content:space-between;align-items:center}
+  .sheet h3 button{border:0;background:#eee;border-radius:8px;font-size:15px;padding:4px 10px}
+  .grp{font-size:12px;color:var(--muted);text-transform:uppercase;margin:10px 0 2px}
+  .lyr{display:grid;grid-template-columns:28px 1fr auto;align-items:center;gap:4px 8px;padding:8px 0;border-bottom:1px solid #eee}
+  .lyr input[type=checkbox]{width:22px;height:22px}
+  .lyr .nm{font-size:15px}
+  .lyr .nm small{display:block;color:var(--muted);font-size:12px}
+  .lyr .ord{display:flex;gap:4px}
+  .lyr .ord button{border:0;background:#efebe2;border-radius:8px;width:34px;height:30px;font-size:15px}
+  .lyr input[type=range]{grid-column:2/4;width:100%;display:none}
+  .lyr.on input[type=range]{display:block}
+  .row{display:flex;gap:8px}.row>*{flex:1}
+  label.f{display:block;font-size:13px;color:var(--muted);margin:8px 0 3px}
+  select{width:100%;font-size:16px;padding:10px;border:1px solid var(--line);border-radius:10px;background:#fff}
+  .chk{display:flex;align-items:center;gap:8px;margin-top:10px}
+  .chk input{width:22px;height:22px}
+  .info{font-size:13px;color:var(--muted);margin-top:8px}
+  .wide{width:100%;margin-top:10px;padding:13px}
+  /* Réticule et nord */
+  #cross{position:fixed;left:50%;top:50%;width:22px;height:22px;margin:-11px 0 0 -11px;z-index:900;pointer-events:none}
+  #cross:before,#cross:after{content:"";position:absolute;background:rgba(217,101,15,.9)}
+  #cross:before{left:10px;top:0;width:2px;height:22px}
+  #cross:after{top:10px;left:0;height:2px;width:22px}
+  #north{position:fixed;left:12px;top:calc(env(safe-area-inset-top) + 66px);z-index:900;background:rgba(255,255,255,.85);border-radius:8px;padding:2px 7px;font-weight:700;font-size:13px;text-align:center;line-height:1.05;pointer-events:none}
+  /* Mode capture : on cache toute l'interface */
+  body.capture .ui{display:none!important}
+  #exitCapture{position:fixed;top:calc(env(safe-area-inset-top) + 8px);right:8px;z-index:1100;display:none;border:0;border-radius:50%;width:34px;height:34px;background:rgba(255,255,255,.45);font-size:16px}
+  body.capture #exitCapture{display:block}
+  .leaflet-control-attribution{font-size:9px}
+  .leaflet-bottom.leaflet-left{margin-bottom:env(safe-area-inset-bottom)}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="cross" class="ui"></div>
+<div id="north">N<br>↑</div>
+
+<div class="top ui">
+  <input id="q" placeholder="Chercher un lieu (Soumont, Grézac…)" enterkeyhint="search">
+  <button class="btn" onclick="search()">🔍</button>
+  <button class="btn" onclick="locate()" title="Ma position">📍</button>
+</div>
+<div id="results" class="ui"></div>
+
+<div class="side ui">
+  <button class="btn" onclick="openSheet('layers')">🗂️ Couches</button>
+  <button class="btn" onclick="openSheet('frame')">⬚ Cadre</button>
+  <button class="btn main" onclick="capture(true)">📷 Capture</button>
+</div>
+
+<div id="sheet-layers" class="sheet ui">
+  <h3>Couches <button onclick="closeSheets()">Fermer</button></h3>
+  <div class="info">Coche les couches à afficher. La glissière règle la transparence. Les flèches ↑ ↓ font passer une couche au-dessus ou en dessous des autres (la liste est dans l'ordre d'affichage : la première est tout en haut).</div>
+  <div id="lyrList"></div>
+  <button class="btn wide" onclick="resetLayers()">Réinitialiser les couches</button>
+</div>
+
+<div id="sheet-frame" class="sheet ui">
+  <h3>Cadre d'impression <button onclick="closeSheets()">Fermer</button></h3>
+  <label class="chk"><input type="checkbox" id="fOn" onchange="saveState();drawFrame()"> Afficher le cadre sur la carte</label>
+  <div class="row">
+    <div><label class="f">Papier</label><select id="fPaper" onchange="saveState();drawFrame()"><option value="A4">A4</option><option value="A3">A3</option></select></div>
+    <div><label class="f">Sens</label><select id="fOrient" onchange="saveState();drawFrame()"><option value="l">Paysage</option><option value="p">Portrait</option></select></div>
+  </div>
+  <label class="f">Échelle</label>
+  <select id="fScale" onchange="saveState();drawFrame()"><option value="5000">1 / 5 000</option><option value="7500">1 / 7 500</option><option value="10000" selected>1 / 10 000</option><option value="15000">1 / 15 000</option></select>
+  <div class="info" id="fInfo"></div>
+  <button class="btn wide" onclick="fitFrame()">Zoomer sur le cadre</button>
+  <button class="btn main wide" onclick="toPDF()">Générer le PDF de ce cadre</button>
+  <div class="info">Le cadre reste centré sur le réticule orange : déplace la carte pour le positionner. Le bouton PDF ouvre le générateur avec ce centre, ce papier et cette échelle.</div>
+</div>
+
+<button id="exitCapture" onclick="capture(false)">✕</button>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const STORE='cartesco-carto-v1';
+
+/* ---------- Catalogue des couches ----------
+   Ordre du tableau = ordre d'empilement par défaut (le premier tout en bas). */
+const IGN=(layer,fmt,style)=>`https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=${layer}&STYLE=${style||'normal'}&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=image/${fmt||'png'}`;
+const CAT=[
+  {id:'plan',   grp:'Fonds',nom:'Plan IGN',desc:'Carte IGN simple et lisible',url:IGN('GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2'),max:19,op:100,on:true},
+  {id:'scan25', grp:'Fonds',nom:'Carte IGN Top 25',desc:'La carte de randonnée (détaillée jusqu’au 1/25 000)',url:'https://data.geopf.fr/private/wmts?apikey=ign_scan_ws&SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=GEOGRAPHICALGRIDSYSTEMS.MAPS.SCAN25TOUR&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=image/jpeg',max:16,op:100},
+  {id:'ortho',  grp:'Fonds',nom:'Photo aérienne IGN',desc:'BD ORTHO, environ 20 cm',url:IGN('ORTHOIMAGERY.ORTHOPHOTOS','jpeg'),max:19,op:100},
+  {id:'otm',    grp:'Fonds',nom:'OpenTopoMap',desc:'Carte topo OSM avec courbes',url:'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',max:17,op:100,sub:'abc',attr:'© OpenTopoMap (CC-BY-SA), © OSM'},
+  {id:'osm',    grp:'Fonds',nom:'OpenStreetMap',desc:'Carte OSM standard',url:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',max:19,op:100,attr:'© contributeurs OpenStreetMap'},
+  {id:'lidar',  grp:'Relief',nom:'Relief LiDAR HD',desc:'Le sol vu à travers les arbres (talus, fossés, murets, rochers)',url:IGN('IGNF_LIDAR-HD_MNT_ELEVATION.ELEVATIONGRIDCOVERAGE.SHADOW'),max:18,op:60},
+  {id:'shadow', grp:'Relief',nom:'Ombrage du relief IGN',desc:'Relief estompé (partout en France)',url:IGN('IGNF_ELEVATION.ELEVATIONGRIDCOVERAGE.SHADOW'),max:17,op:45},
+  {id:'forest', grp:'Superpositions',nom:'Forêts (BD Forêt)',desc:'Types de peuplements forestiers',url:IGN('LANDCOVER.FORESTINVENTORY.V2'),max:16,op:55},
+  {id:'cadastre',grp:'Superpositions',nom:'Cadastre',desc:'Parcelles (utile pour les autorisations propriétaires)',url:IGN('CADASTRALPARCELS.PARCELLAIRE_EXPRESS'),max:19,op:80},
+  {id:'hydro',  grp:'Superpositions',nom:'Cours d’eau',desc:'Réseau hydrographique IGN',url:IGN('HYDROGRAPHY.HYDROGRAPHY'),max:18,op:100},
+  {id:'roads',  grp:'Superpositions',nom:'Routes',desc:'Réseau routier IGN',url:IGN('TRANSPORTNETWORKS.ROADS'),max:18,op:100},
+  {id:'bati',   grp:'Superpositions',nom:'Bâtiments',desc:'Bâti IGN',url:IGN('BUILDINGS.BUILDINGS'),max:18,op:100},
+  {id:'contour',grp:'Superpositions',nom:'Courbes de niveau IGN',desc:'Équidistance auto selon le zoom',url:IGN('ELEVATION.CONTOUR.LINE'),max:18,op:100,on:true},
+  {id:'dfci',   grp:'Superpositions',nom:'Carroyage DFCI',desc:'Quadrillage pompiers / forêt',url:IGN('GEOGRAPHICALGRIDSYSTEM.DFCI'),max:16,op:100}
+];
+
+/* ---------- État (mémorisé dans le navigateur) ---------- */
+function defaults(){
+  return{order:CAT.map(c=>c.id),on:Object.fromEntries(CAT.map(c=>[c.id,!!c.on])),op:Object.fromEntries(CAT.map(c=>[c.id,c.op])),
+         view:{lat:43.7277,lon:3.3543,z:15},frame:{on:true,paper:'A4',orient:'l',scale:'10000'}};
+}
+let S=defaults();
+try{
+  const raw=localStorage.getItem(STORE);
+  if(raw){const s=JSON.parse(raw);
+    S={...S,...s,on:{...S.on,...(s.on||{})},op:{...S.op,...(s.op||{})},frame:{...S.frame,...(s.frame||{})}};
+    // nouvelles couches éventuelles ajoutées en bas de l'ordre mémorisé
+    const known=new Set(S.order);for(const c of CAT)if(!known.has(c.id))S.order.unshift(c.id);
+    S.order=S.order.filter(id=>CAT.some(c=>c.id===id));
+  }
+}catch(e){}
+function saveState(){
+  S.frame={on:$('fOn').checked,paper:$('fPaper').value,orient:$('fOrient').value,scale:$('fScale').value};
+  const c=map.getCenter();S.view={lat:c.lat,lon:c.lng,z:map.getZoom()};
+  try{localStorage.setItem(STORE,JSON.stringify(S));}catch(e){}
+}
+
+/* ---------- Carte ---------- */
+const map=L.map('map',{zoomControl:false,maxZoom:20,minZoom:5}).setView([S.view.lat,S.view.lon],S.view.z);
+L.control.scale({imperial:false,position:'bottomleft',maxWidth:160}).addTo(map);
+map.attributionControl.setPrefix('');
+const LAY={};
+for(const c of CAT){
+  LAY[c.id]=L.tileLayer(c.url,{maxNativeZoom:c.max,maxZoom:20,subdomains:c.sub||'abc',crossOrigin:true,
+    attribution:c.attr||'© IGN Géoplateforme'});
+}
+function applyLayers(){
+  S.order.forEach((id,i)=>{
+    const l=LAY[id];l.setZIndex(i+1);l.setOpacity((S.op[id]??100)/100);
+    if(S.on[id]&&!map.hasLayer(l))l.addTo(map);
+    if(!S.on[id]&&map.hasLayer(l))map.removeLayer(l);
+  });
+}
+
+/* ---------- Panneau des couches ---------- */
+function renderList(){
+  const box=$('lyrList');box.innerHTML='';
+  const shown=S.order.slice().reverse(); // du haut vers le bas
+  shown.forEach((id,i)=>{
+    const c=CAT.find(x=>x.id===id);
+    const d=document.createElement('div');d.className='lyr'+(S.on[id]?' on':'');
+    d.innerHTML=`<input type="checkbox" ${S.on[id]?'checked':''}>
+      <div class="nm">${c.nom}<small>${c.desc} · ${c.grp}</small></div>
+      <div class="ord"><button title="Monter">↑</button><button title="Descendre">↓</button></div>
+      <input type="range" min="5" max="100" step="5" value="${S.op[id]}">`;
+    const [cb,range]=d.querySelectorAll('input');const [up,down]=d.querySelectorAll('.ord button');
+    cb.onchange=()=>{S.on[id]=cb.checked;d.classList.toggle('on',cb.checked);applyLayers();saveState();};
+    range.oninput=()=>{S.op[id]=+range.value;LAY[id].setOpacity(S.op[id]/100);};
+    range.onchange=saveState;
+    up.onclick=()=>move(id,+1);down.onclick=()=>move(id,-1);
+    if(i===0)up.disabled=true;if(i===shown.length-1)down.disabled=true;
+    box.appendChild(d);
+  });
+}
+function move(id,dir){
+  const i=S.order.indexOf(id),j=i+dir;if(j<0||j>=S.order.length)return;
+  [S.order[i],S.order[j]]=[S.order[j],S.order[i]];
+  applyLayers();renderList();saveState();
+}
+function resetLayers(){const d=defaults();S.order=d.order;S.on=d.on;S.op=d.op;applyLayers();renderList();saveState();}
+
+function openSheet(n){closeSheets();$('sheet-'+n).classList.add('open');if(n==='layers')renderList();if(n==='frame')drawFrame();}
+function closeSheets(){document.querySelectorAll('.sheet').forEach(s=>s.classList.remove('open'));}
+
+/* ---------- Cadre d'impression (mêmes dimensions que le générateur PDF) ---------- */
+const M_LAT=110574;let frameRect=null;
+function frameSize(){
+  const paper=$('fPaper').value,orient=$('fOrient').value,scale=+$('fScale').value;
+  let pw=paper==='A4'?210:297,ph=paper==='A4'?297:420;if(orient==='l')[pw,ph]=[ph,pw];
+  return{Wm:(pw-16)*scale/1000,Hm:(ph-36)*scale/1000,scale,paper,orient};
+}
+function drawFrame(){
+  if(frameRect){map.removeLayer(frameRect);frameRect=null;}
+  const f=frameSize(),c=map.getCenter();
+  $('fInfo').textContent=`Zone couverte : ${(f.Wm/1000).toFixed(2).replace('.',',')} × ${(f.Hm/1000).toFixed(2).replace('.',',')} km · centre ${c.lat.toFixed(5)}, ${c.lng.toFixed(5)}`;
+  if(!$('fOn').checked)return;
+  const mx=111320*Math.cos(c.lat*Math.PI/180);
+  const b=[[c.lat-f.Hm/2/M_LAT,c.lng-f.Wm/2/mx],[c.lat+f.Hm/2/M_LAT,c.lng+f.Wm/2/mx]];
+  frameRect=L.rectangle(b,{color:'#d9650f',weight:3,dashArray:'8 6',fill:false,interactive:false}).addTo(map);
+}
+function fitFrame(){if(!$('fOn').checked){$('fOn').checked=true;}drawFrame();if(frameRect)map.fitBounds(frameRect.getBounds(),{padding:[30,30]});saveState();}
+function toPDF(){
+  const c=map.getCenter(),f=frameSize();saveState();
+  location.href=`index.html?lat=${c.lat.toFixed(5)}&lon=${c.lng.toFixed(5)}&scale=${f.scale}&paper=${f.paper}&orient=${f.orient}`;
+}
+
+/* ---------- Recherche et position ---------- */
+async function search(){
+  const q=$('q').value.trim(),box=$('results');box.innerHTML='';if(!q)return;
+  // coordonnées collées directement ?
+  const m=q.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/)||q.match(/(-?\d{1,2}[.,]\d+)\s*[,; ]\s*(-?\d{1,3}[.,]\d+)/);
+  if(m){map.setView([parseFloat(m[1].replace(',','.')),parseFloat(m[2].replace(',','.'))],16);return;}
+  box.innerHTML='<button>Recherche…</button>';
+  try{
+    const r=await fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&countrycodes=fr&q='+encodeURIComponent(q),{headers:{'Accept-Language':'fr'}});
+    const js=await r.json();box.innerHTML='';
+    if(!js.length){box.innerHTML='<button onclick="this.parentNode.innerHTML=\'\'">Aucun résultat</button>';return;}
+    js.forEach(p=>{const b=document.createElement('button');b.textContent=p.display_name;
+      b.onclick=()=>{map.setView([+p.lat,+p.lon],16);box.innerHTML='';$('q').blur();};box.appendChild(b);});
+  }catch(e){box.innerHTML='<button onclick="this.parentNode.innerHTML=\'\'">Recherche impossible</button>';}
+}
+$('q').addEventListener('keydown',e=>{if(e.key==='Enter')search();});
+let meMarker=null;
+function locate(){
+  if(!navigator.geolocation)return alert('Géolocalisation indisponible');
+  navigator.geolocation.getCurrentPosition(p=>{
+    const ll=[p.coords.latitude,p.coords.longitude];
+    if(meMarker)map.removeLayer(meMarker);
+    meMarker=L.circleMarker(ll,{radius:8,color:'#fff',weight:3,fillColor:'#1a73e8',fillOpacity:1}).addTo(map);
+    map.setView(ll,16);
+  },()=>alert('Position refusée ou introuvable'),{enableHighAccuracy:true,timeout:10000});
+}
+
+/* ---------- Mode capture ---------- */
+function capture(on){
+  closeSheets();$('results').innerHTML='';
+  document.body.classList.toggle('capture',on);
+}
+
+/* ---------- Démarrage ---------- */
+$('fOn').checked=S.frame.on;$('fPaper').value=S.frame.paper;$('fOrient').value=S.frame.orient;$('fScale').value=S.frame.scale;
+applyLayers();drawFrame();
+map.on('move',drawFrame);
+map.on('moveend',saveState);
+</script>
+</body>
+</html>
