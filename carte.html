@@ -316,6 +316,23 @@ function tileLon(x,z){return x/2**z*360-180;}
 function tileLat(y,z){const n=Math.PI*(1-2*y/2**z);return Math.atan(Math.sinh(n))*180/Math.PI;}
 function loadImg(src){return new Promise((res,rej)=>{const i=new Image();i.crossOrigin='anonymous';i.onload=()=>res(i);i.onerror=()=>rej(new Error('tuile'));i.src=src;});}
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+// Télécharge une tuile : null si elle n'existe pas chez le fournisseur ou ne répond pas.
+// 12 s maximum par essai, 3 essais seulement en cas d'erreur réseau / serveur.
+async function fetchTile(url){
+  for(let essai=1;essai<=3;essai++){
+    const ctrl=new AbortController(),t=setTimeout(()=>ctrl.abort(),12000);
+    try{
+      const r=await fetch(url,{signal:ctrl.signal});
+      if(r.status===400||r.status===404||r.status===204)return null; // tuile absente : inutile d'insister
+      if(!r.ok)throw new Error('HTTP '+r.status);
+      const b=await r.blob();
+      if(!b.type.startsWith('image'))return null;
+      return await createImageBitmap(b);
+    }catch(e){await sleep(400*essai);}
+    finally{clearTimeout(t);}
+  }
+  return null;
+}
 const tileURL=(L,z,x,y)=>L.url.replace('{z}',z).replace('{x}',x).replace('{y}',y).replace('{s}','abc'[(x+y)%3]);
 
 // Dessine une couche (tuiles) dans le canevas d'impression ; renvoie le nombre de tuiles manquantes
@@ -330,15 +347,16 @@ async function drawTiles(ctx,L,box,ppm,lat0,toXY,progress){
   const total=queue.length;let done=0,fails=0;
   const worker=async()=>{
     while(queue.length){
-      const[x,y]=queue.shift();let img=null;
-      for(let essai=1;essai<=3&&!img;essai++){try{img=await loadImg(tileURL(L,z,x,y));}catch(e){await sleep(500*essai);}}
+      const[x,y]=queue.shift();
+      const img=await fetchTile(tileURL(L,z,x,y));
       const[x1,y1]=toXY(tileLat(y,z),tileLon(x,z)),[x2,y2]=toXY(tileLat(y+1,z),tileLon(x+1,z));
       if(img)ctx.drawImage(img,x1,y1,x2-x1+0.6,y2-y1+0.6);
       else{ // tuile absente : morceau agrandi d'une tuile de zoom inférieur
         let ok=false;
         for(let up=1;up<=3&&!ok;up++){
           const f=2**up,px=Math.floor(x/f),py=Math.floor(y/f),size=256/f;
-          try{const par=await loadImg(tileURL(L,z-up,px,py));ctx.drawImage(par,(x-px*f)*size,(y-py*f)*size,size,size,x1,y1,x2-x1+0.6,y2-y1+0.6);ok=true;}catch(e){}
+          const par=await fetchTile(tileURL(L,z-up,px,py));
+          if(par){ctx.drawImage(par,(x-px*f)*size,(y-py*f)*size,size,size,x1,y1,x2-x1+0.6,y2-y1+0.6);ok=true;}
         }
         if(!ok)fails++;
       }
