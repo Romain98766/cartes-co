@@ -136,6 +136,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script>
 const $=id=>document.getElementById(id);
+// Sur iPhone/iPad/Android : fenêtre de partage (Enregistrer dans Fichiers, Imprimer…). Sur ordinateur : téléchargement direct.
+const MOBILE=/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
 const STORE='cartesco-carto-v2';
 
 /* Classement d'intérêt pour la course d'orientation (ordre d'affichage de la liste) */
@@ -433,12 +435,12 @@ async function exportFrame(kind){
       const doc=new jsPDF({orientation:land?'landscape':'portrait',unit:'mm',format:[Math.min(pw,ph),Math.max(pw,ph)]});
       doc.addImage(cv.toDataURL('image/jpeg',0.92),'JPEG',0,0,pw,ph);
       const blob=doc.output('blob'),file=new File([blob],name+'.pdf',{type:'application/pdf'});
-      if(navigator.canShare&&navigator.canShare({files:[file]}))await navigator.share({files:[file],title:name}).catch(()=>{});
+      if(MOBILE&&navigator.canShare&&navigator.canShare({files:[file]}))await navigator.share({files:[file],title:name}).catch(()=>{});
       else doc.save(name+'.pdf');
     }else{
       const blob=await new Promise(r=>cv.toBlob(r,'image/png'));
       const file=new File([blob],name+'.png',{type:'image/png'});
-      if(navigator.canShare&&navigator.canShare({files:[file]}))await navigator.share({files:[file]}).catch(()=>{});
+      if(MOBILE&&navigator.canShare&&navigator.canShare({files:[file]}))await navigator.share({files:[file]}).catch(()=>{});
       else{const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name+'.png';a.click();}
     }
     st(fails?`✔ Exporté, mais ${fails} morceau(x) n'ont pas chargé (zones vides). Relance pour réessayer.`:'✔ Exporté : '+name+(kind==='pdf'?'.pdf':'.png'));

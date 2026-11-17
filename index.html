@@ -92,6 +92,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script>
 const $=id=>document.getElementById(id);
+// Sur iPhone/iPad/Android : fenêtre de partage (Enregistrer dans Fichiers, Imprimer…). Sur ordinateur : téléchargement direct.
+const MOBILE=/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
 const HERAULT_VIEWBOX='2.6,44.0,4.0,43.3'; // gauche,haut,droite,bas
 const PRESETS={
   soumont:{q:'Soumont',title:'Soumont'},
@@ -705,7 +707,7 @@ function exportPDF(){
   const name=lastName+'.pdf';
   const blob=doc.output('blob');
   const file=new File([blob],name,{type:'application/pdf'});
-  if(navigator.canShare&&navigator.canShare({files:[file]})){
+  if(MOBILE&&navigator.canShare&&navigator.canShare({files:[file]})){
     navigator.share({files:[file],title:name}).catch(()=>{});
   }else doc.save(name);
 }
@@ -728,7 +730,7 @@ function exportPNG(){
   if(!lastCanvas)return;
   lastCanvas.toBlob(b=>{
     const file=new File([b],lastName+'.png',{type:'image/png'});
-    if(navigator.canShare&&navigator.canShare({files:[file]})){navigator.share({files:[file]}).catch(()=>{});}
+    if(MOBILE&&navigator.canShare&&navigator.canShare({files:[file]})){navigator.share({files:[file]}).catch(()=>{});}
     else{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=lastName+'.png';a.click();}
   },'image/png');
 }
