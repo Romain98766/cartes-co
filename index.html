@@ -421,10 +421,20 @@ async function drawRaster(ctx,kind,box,ppm,lat0,toXY){
         catch(e){await sleep(700*essai);}
       }
       done++;if(done%10===0)status(`Fond ${R.nom} : ${done}/${total} tuiles…`);
-      if(!img){fails++;continue;}
       const [x1,y1]=toXY(tileLat(y,z),tileLon(x,z));
       const [x2,y2]=toXY(tileLat(y+1,z),tileLon(x+1,z));
-      ctx.drawImage(img,x1,y1,x2-x1+0.6,y2-y1+0.6);
+      if(img){ctx.drawImage(img,x1,y1,x2-x1+0.6,y2-y1+0.6);continue;}
+      // Tuile absente chez l'IGN : on découpe le bon morceau d'une tuile de zoom inférieur
+      let ok=false;
+      for(let up=1;up<=3&&!ok;up++){
+        const f=2**up,px=Math.floor(x/f),py=Math.floor(y/f),size=256/f;
+        try{
+          const parent=await loadImg(R.url(z-up,px,py));
+          ctx.drawImage(parent,(x-px*f)*size,(y-py*f)*size,size,size,x1,y1,x2-x1+0.6,y2-y1+0.6);
+          ok=true;
+        }catch(e){}
+      }
+      if(!ok)fails++;
     }
   };
   await Promise.all(Array.from({length:6},worker));
