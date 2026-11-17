@@ -86,7 +86,7 @@
   <canvas id="cv" width="10" height="10"></canvas>
   <button id="pdf" onclick="exportPDF()" disabled>Télécharger / partager le PDF</button>
   <button id="png" class="sec" onclick="exportPNG()" disabled>Enregistrer en image (PNG)</button>
-  <div class="note">Données : IGN Géoplateforme (BD TOPO®, SCAN 25®, Plan IGN, BD ORTHO®) · secours OpenStreetMap (© contributeurs, ODbL) · altitudes AWS Terrain Tiles. Carte non relevée sur le terrain : à vérifier avant usage. Nord géographique (pas magnétique).</div>
+  <div class="note">Données : IGN Géoplateforme (BD TOPO®, SCAN 25®, Plan IGN, BD ORTHO®) · secours OpenStreetMap (© contributeurs, ODbL) · altitudes IGN RGE ALTI®. Carte non relevée sur le terrain : à vérifier avant usage. Nord géographique (pas magnétique).</div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -159,7 +159,33 @@ function tileLon(x,z){return x/2**z*360-180;}
 function tileLat(y,z){const n=Math.PI*(1-2*y/2**z);return Math.atan(Math.sinh(n))*180/Math.PI;}
 function loadImg(src){return new Promise((res,rej)=>{const i=new Image();i.crossOrigin='anonymous';i.onload=()=>res(i);i.onerror=()=>rej(new Error('tuile introuvable'));i.src=src;});}
 
+/* Altitudes : modèle de terrain IGN RGE ALTI® (~5 m, précision métrique), AWS Terrain en secours */
 async function getElevation(latMin,latMax,lonMin,lonMax){
+  try{
+    const z=14,d=180/2**z,tiles=new Map(),jobs=[];let need=0;
+    for(let c=Math.floor((lonMin+180)/d)-1;c<=Math.floor((lonMax+180)/d)+1;c++)
+      for(let r=Math.floor((90-latMax)/d)-1;r<=Math.floor((90-latMin)/d)+1;r++){
+        need++;
+        jobs.push((async()=>{
+          const url=`https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES&STYLE=normal&TILEMATRIXSET=WGS84G&TILEMATRIX=14&TILEROW=${r}&TILECOL=${c}&FORMAT=image%2Fx-bil%3Bbits%3D32`;
+          for(let essai=1;essai<=3;essai++){
+            try{const res=await fetchTimeout(url,{},20000);if(!res.ok)throw 0;const b=await res.arrayBuffer();
+              if(b.byteLength===262144){tiles.set(c+'/'+r,new Float32Array(b));return;}}catch(e){await sleep(600*essai);}
+          }
+        })());
+      }
+    await Promise.all(jobs);
+    if(tiles.size===need){
+      const get=(a,b)=>{const t=tiles.get(Math.floor(a/256)+'/'+Math.floor(b/256));if(!t)return NaN;const w=t[(b&255)*256+(a&255)];return w>-500?w:NaN;};
+      return (lat,lon)=>{
+        const gx=(lon+180)/d*256-0.5,gy=(90-lat)/d*256-0.5,i=Math.floor(gx),j=Math.floor(gy),ax=gx-i,ay=gy-j;
+        return get(i,j)*(1-ax)*(1-ay)+get(i+1,j)*ax*(1-ay)+get(i,j+1)*(1-ax)*ay+get(i+1,j+1)*ax*ay;
+      };
+    }
+  }catch(e){console.warn('MNT IGN indisponible, secours AWS',e);}
+  return getElevationAWS(latMin,latMax,lonMin,lonMax);
+}
+async function getElevationAWS(latMin,latMax,lonMin,lonMax){
   const z=14;
   const [xa,ya]=tileXY(latMax,lonMin,z),[xb,yb]=tileXY(latMin,lonMax,z);
   const tx0=Math.floor(xa),tx1=Math.floor(xb),ty0=Math.floor(ya),ty1=Math.floor(yb);
@@ -553,7 +579,7 @@ async function generate(){
     if(drawContours){
       const gp=g*ppm;
       const cx=i=>X0+i*gp,cy=j=>Y0+j*gp;
-      const indexStep=eq*5;
+      const indexStep=eq===2.5?10:eq*5; // courbes maîtresses sur des altitudes rondes
       const startL=Math.ceil(zmin/eq)*eq;
       ctx.strokeStyle=fond==='ortho'?'#ff9a3c':'#c4621c';
       const levels=[];for(let L=startL;L<=zmax;L+=eq)levels.push(Math.round(L*100)/100);
@@ -670,7 +696,7 @@ async function generate(){
       :source==='ign'?'Données IGN BD TOPO® (Licence Ouverte Etalab)'
       :source==='osm'?'Fond OpenStreetMap (© contributeurs, ODbL)':'Relief seul';
     ctx.font=`${mm(2.5)}px Arial`;ctx.fillStyle='#333';
-    ctx.fillText(credit+' · altitudes AWS Terrain Tiles · carte non relevée sur le terrain · nord géographique',mm(8),mm(ph-2.5));
+    ctx.fillText(credit+' · altitudes IGN RGE ALTI® · carte non relevée sur le terrain · nord géographique',mm(8),mm(ph-2.5));
     ctx.fillText(`Centre : ${lat0.toFixed(5)}, ${lon0.toFixed(5)}`,mm(pw-52),mm(sy+3.2));
 
     const fondTag={co:'CO',scan25:'IGN25',plan:'PlanIGN',ortho:'Photo'}[fond];

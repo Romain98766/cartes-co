@@ -226,6 +226,8 @@ const wX=lon=>(lon+180)/360;
 const wY=lat=>{const r=lat*Math.PI/180;return(1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2;};
 const wLon=X=>X*360-180;
 const wLat=Y=>Math.atan(Math.sinh(Math.PI*(1-2*Y)))*180/Math.PI;
+// Courbes maîtresses sur des altitudes rondes : tous les 10 m (équidistance 2,5 m), 25 m (5 m), 50 m (10 m)
+function idxStep(eq){return eq===2.5?10:eq*5;}
 function isoEq(){return S.iso.eq==='auto'?((+$('fScale').value)<=5000?2.5:5):+S.iso.eq;}
 let isoMsgTimer=null;
 function isoStatus(t,keep){
@@ -389,12 +391,20 @@ async function isoElevTile(x,y){
   ISO.elev.set(key,p);
   const v=await p;ISO.elev.set(key,v);return v;
 }
+/* Altitudes : modèle de terrain IGN RGE ALTI® (MNT ~5 m, précision métrique) en priorité,
+   tuiles AWS Terrain (EU-DEM ~30 m, moins précises) seulement en secours. */
 async function isoElevEnsure(x0,y0,x1,y1){
   const n=2**14,jobs=[];
   for(let x=Math.floor(x0*n)-1;x<=Math.floor(x1*n)+1;x++)for(let y=Math.floor(y0*n)-1;y<=Math.floor(y1*n)+1;y++)jobs.push(isoElevTile(x,y));
+  jobs.push(bilEnsure(VEG.mnt,MNT_L,14,wLon(x0),wLat(y1),wLon(x1),wLat(y0),true));
   await Promise.all(jobs);
 }
 function isoElev(X,Y){ // altitude interpolée en coordonnées monde
+  const ign=bilGet(VEG.mnt,14,wLon(X),wLat(Y),true);
+  if(isFinite(ign))return ign;
+  return isoElevAWS(X,Y);
+}
+function isoElevAWS(X,Y){
   const N=2**14*256,px=X*N-0.5,py=Y*N-0.5,i=Math.floor(px),j=Math.floor(py),ax=px-i,ay=py-j;
   const v=(gi,gj)=>{const t=ISO.elev.get((gi>>8)+'/'+(gj>>8));return t&&t.length?t[(gj&255)*256+(gi&255)]:NaN;};
   return v(i,j)*(1-ax)*(1-ay)+v(i+1,j)*ax*(1-ay)+v(i,j+1)*(1-ax)*ay+v(i+1,j+1)*ax*ay;
@@ -652,7 +662,7 @@ function paintIso(ctx,z,x,y,R,veg){
     const gx=g=>((i0+g)*step-ox)*R,gy=g=>((j0+g)*step-oy)*R;
     ctx.strokeStyle=ISOC.brown;ctx.lineCap='round';ctx.lineJoin='round';ctx.setLineDash([]);
     for(let Lv=Math.ceil(zmin/eq)*eq;Lv<=zmax;Lv+=eq){
-      const isIdx=Math.abs(Lv/(eq*5)-Math.round(Lv/(eq*5)))<1e-6;
+      const isIdx=Math.abs(Lv/idxStep(eq)-Math.round(Lv/idxStep(eq)))<1e-6;
       ctx.lineWidth=lw(isIdx?0.25:0.14);ctx.beginPath();
       for(const pl of contourPolylines(G,nx,ny,Lv)){pl.forEach((p,i)=>{const X=gx(p[0]),Y=gy(p[1]);i?ctx.lineTo(X,Y):ctx.moveTo(X,Y);});}
       ctx.stroke();
@@ -772,7 +782,7 @@ function paintClaire(ctx,z,x,y,R){
     const S=45*mmPx;
     ctx.strokeStyle=CLC.contour;ctx.lineCap='round';ctx.lineJoin='round';ctx.setLineDash([]);
     for(let Lv=Math.ceil(zmin/eq)*eq;Lv<=zmax;Lv+=eq){
-      const isIdx=Math.abs(Lv/(eq*5)-Math.round(Lv/(eq*5)))<1e-6;
+      const isIdx=Math.abs(Lv/idxStep(eq)-Math.round(Lv/idxStep(eq)))<1e-6;
       const lines=contourPolylines(G,nx,ny,Lv).map(pl=>pl.map(p=>[(i0+p[0])*step,(j0+p[1])*step])); // pixels globaux
       ctx.lineWidth=lw(isIdx?0.26:0.13);ctx.beginPath();
       for(const pl of lines)pl.forEach((p,i)=>{const X=(p[0]-ox)*R,Y=(p[1]-oy)*R;i?ctx.lineTo(X,Y):ctx.moveTo(X,Y);});
@@ -967,7 +977,7 @@ function renderList(){
           <option value="auto">auto : ${auto} m (cadre 1:${sc.toLocaleString('fr-FR')})</option>
           <option value="2.5">2,5 m</option><option value="5">5 m</option><option value="10">10 m</option>
         </select></label>
-        <small>Altitude écrite sur les courbes épaisses (toutes les 5 courbes). Lis le chiffre à l'endroit : le haut du chiffre regarde le haut de la pente. Vert foncé = forêt fermée, vert pâle = forêt ouverte, kaki = garrigue / lande, crème = découvert.</small>`;
+        <small>Altitude écrite sur les courbes épaisses (tous les 10 m en 2,5 m, 25 m en 5 m, 50 m en 10 m), d'après le modèle de terrain IGN RGE ALTI. Lis le chiffre à l'endroit : le haut du chiffre regarde le haut de la pente. Vert foncé = forêt fermée, vert pâle = forêt ouverte, kaki = garrigue / lande, crème = découvert.</small>`;
       const sel=gs.querySelector('select');sel.value=String(S.iso.eq);
       sel.onchange=()=>{S.iso.eq=sel.value==='auto'?'auto':+sel.value;LAY.claire.redraw();if(map.hasLayer(LAY.iso))LAY.iso.redraw();saveState();};
       d.appendChild(gs);
