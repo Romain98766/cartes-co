@@ -417,18 +417,19 @@ async function vegRaw(zi,x,y){
       for(let i=0;i<256;i++){lonC[i]=wLon((x*256+i+0.5)/(n2*256));latR[i]=wLat((y*256+i+0.5)/(n2*256));}
       const B=zi>=17?4:zi===16?2:1,n=256/B,cls=new Uint8Array(n*n);
       for(let by=0;by<n;by++)for(let bx=0;bx<n;bx++){
-        let s=0,sn=0,s2=0,cnt=0,valid=0,v1=0,v4=0;
+        let s=0,sn=0,s2=0,cnt=0,valid=0,v03=0,v1=0,v4=0;
         for(let yy=0;yy<B;yy++)for(let xx=0;xx<B;xx++){
           const py=by*B+yy,px=bx*B+xx,i=(py*256+px)*4,nir=d[i],r=d[i+1],nd=(nir-r)/(nir+r+1);
           s+=nd;sn+=nir;s2+=nir*nir;cnt++;
           const hs=bilGet(VEG.mns,zm,lonC[px],latR[py],false),ht=bilGet(VEG.mnt,14,lonC[px],latR[py],true),hh=hs-ht;
-          if(isFinite(hh)){valid++;if(nd>=0.15){if(hh>=1)v1++;if(hh>=4)v4++;}} // bâtiments et rochers (pas verts) ignorés
+          if(isFinite(hh)){valid++;if(hh>=0.3)v03++;if(hh>=1.5)v1++;if(hh>=4)v4++;}
         }
         const nd=s/cnt;
         if(valid>=cnt/2){
           // hauteur de végétation disponible : classement façon cartographe CO
-          const c1=v1/valid,c4=v4/valid;
-          cls[by*n+bx]=c4>=0.45?2:c1>=0.6?4:c1>=0.35?3:c1>=0.12?1:(nd>=0.28?0:1);
+          // c4 : part d'arbres (> 4 m) · c1 : part de buissons et arbres (> 1,5 m) · c03 : part de végétation (> 30 cm)
+          const c1=v1/valid,c4=v4/valid,c03=v03/valid;
+          cls[by*n+bx]=c4>=0.45?2:c1>=0.65?4:c1>=0.40?3:(c1>=0.15||c03>=0.4)?1:0;
         }else{
           // secours : photo infrarouge seule
           const m=sn/cnt,sd=Math.sqrt(Math.max(0,s2/cnt-m*m));
