@@ -34,6 +34,9 @@
   .lyr input[type=checkbox]{width:22px;height:22px}
   .lyr .nm{font-size:15px}
   .lyr .nm small{display:block;color:var(--muted);font-size:12px}
+  .mixes{display:flex;flex-direction:column;gap:6px;margin:6px 0 4px}
+  .mixes .btn{text-align:left;font-size:15px;padding:10px 12px;box-shadow:none;border:1px solid var(--line)}
+  .mixes small{display:block;font-weight:400;color:var(--muted);font-size:12px;margin-top:2px}
   .gset{grid-column:2/4;display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;font-size:13px;color:var(--ink);margin-top:4px}
   .gset select,.gset input{font-size:14px;padding:6px;border:1px solid var(--line);border-radius:8px}
   .gset small{color:var(--muted);width:100%}
@@ -102,6 +105,13 @@
 <div id="sheet-layers" class="sheet ui">
   <h3>Couches <button onclick="closeSheets()">Fermer</button></h3>
   <div class="info">Classées de la plus utile à la moins utile pour la course d'orientation. Coche pour afficher, la glissière règle la transparence. L'empilement est automatique (fonds dessous, relief au milieu, tracés dessus) ; « ⤒ Dessus » fait passer une couche par-dessus toutes les autres ; « Dessus ✕ » la remet à sa place.</div>
+  <div class="grp">Mélanges tout prêts</div>
+  <div class="mixes">
+    <button class="btn" onclick="applyMix('complete')">⭐ Carte CO complète<small>Style ISOM + relief LiDAR léger + lignes nord</small></button>
+    <button class="btn" onclick="applyMix('plan')">🗺️ Plan lisible<small>Plan IGN sans noms + relief LiDAR + lignes nord</small></button>
+    <button class="btn" onclick="applyMix('photo')">📷 Photo + relief<small>Photo aérienne + LiDAR + courbes + lignes nord</small></button>
+  </div>
+  <div class="grp">Toutes les couches</div>
   <div id="lyrList"></div>
   <button class="btn wide" onclick="resetLayers()">Réinitialiser les couches</button>
 </div>
@@ -162,8 +172,8 @@ const CAT=[
   {id:'planpur',grp:'Fond',nom:'Plan IGN sans noms',desc:'Style classique IGN (routes, chemins, bois, courbes, bâtiments) sans aucun nom de lieu : très lisible',vec:'classique',op:100},
   {id:'ortho',  grp:'Fond',nom:'Photo aérienne IGN',desc:'Clairières, bois clairs ou denses, zones rocheuses, murets',url:IGN('ORTHOIMAGERY.ORTHOPHOTOS','jpeg'),max:19,op:100},
   {id:'iso',    grp:'Fond',nom:'Carte CO style ISOM (auto)',desc:'Couleurs des cartes de course d’orientation, dessinée automatiquement depuis les données IGN. Approximation : à vérifier sur le terrain',iso:true,max:19,op:100},
-  {id:'shadow', grp:'Relief',nom:'Ombrage du relief IGN',desc:'Relief estompé, partout en France (secours si pas de LiDAR)',url:IGN('IGNF_ELEVATION.ELEVATIONGRIDCOVERAGE.SHADOW'),max:17,op:45},
-  {id:'lidar',  grp:'Relief',nom:'Relief LiDAR HD',desc:'Le sol vu à travers les arbres : talus, fossés, murets, rochers, dépressions. La base des cartographes CO',url:IGN('IGNF_LIDAR-HD_MNT_ELEVATION.ELEVATIONGRIDCOVERAGE.SHADOW'),max:18,op:60},
+  {id:'shadow', grp:'Relief',nom:'Ombrage du relief IGN',desc:'Relief estompé, partout en France (secours si pas de LiDAR)',url:IGN('IGNF_ELEVATION.ELEVATIONGRIDCOVERAGE.SHADOW'),max:17,op:45,blend:'multiply'},
+  {id:'lidar',  grp:'Relief',nom:'Relief LiDAR HD',desc:'Le sol vu à travers les arbres : talus, fossés, murets, rochers, dépressions. La base des cartographes CO',url:IGN('IGNF_LIDAR-HD_MNT_ELEVATION.ELEVATIONGRIDCOVERAGE.SHADOW'),max:18,op:60,blend:'multiply'},
   {id:'forest', grp:'Superposition',nom:'Forêts (BD Forêt)',desc:'Feuillus, résineux, landes : aide à prévoir la course dans le bois',url:IGN('LANDCOVER.FORESTINVENTORY.V2'),max:16,op:55},
   {id:'cadastre',grp:'Superposition',nom:'Cadastre',desc:'Parcelles : pour demander les autorisations aux propriétaires',url:IGN('CADASTRALPARCELS.PARCELLAIRE_EXPRESS'),max:19,op:80},
   {id:'dfci',   grp:'Superposition',nom:'Carroyage DFCI',desc:'Quadrillage pompiers / forêt (secours, coordination)',url:IGN('GEOGRAPHICALGRIDSYSTEM.DFCI'),max:16,op:100},
@@ -245,6 +255,8 @@ async function isoWfs(layer,s,w,n,e){
 // GeoJSON -> anneaux / lignes en coordonnées « monde » (0..1, Web Mercator)
 function isoParts(g,poly){
   if(!g)return[];
+  if(g.type==='Point')return[new Float64Array([wX(g.coordinates[0]),wY(g.coordinates[1])])];
+  if(g.type==='MultiPoint')return g.coordinates.map(c=>new Float64Array([wX(c[0]),wY(c[1])]));
   let list=[];
   if(poly){if(g.type==='Polygon')list=g.coordinates;else if(g.type==='MultiPolygon')list=g.coordinates.flat();}
   else{if(g.type==='LineString')list=[g.coordinates];else if(g.type==='MultiLineString')list=g.coordinates;}
@@ -260,7 +272,9 @@ async function isoLoad(bx){ // bx = [x0,y0,x1,y1] monde
   const s=wLat(bx[3]),n=wLat(bx[1]),w=wLon(bx[0]),e=wLon(bx[2]);
   const names=['zone_de_vegetation','surface_hydrographique','batiment','troncon_de_route',
                'troncon_hydrographique','construction_lineaire','ligne_orographique','haie',
-               'LANDCOVER.FORESTINVENTORY.V2:formation_vegetale'];
+               'LANDCOVER.FORESTINVENTORY.V2:formation_vegetale',
+               'detail_orographique','detail_hydrographique','construction_ponctuelle','ligne_electrique',
+               'troncon_de_voie_ferree','cimetiere','terrain_de_sport','reservoir'];
   const res=await Promise.all(names.map(L=>isoWfs(L,s,w,n,e)));
   const L={};names.forEach((k,i)=>L[k]=res[i]);
   const F=[];
@@ -303,6 +317,19 @@ async function isoLoad(bx){ // bx = [x0,y0,x1,y1] monde
     if(k)isoFeat(F,k,isoParts(f.geometry,false));
   }
   for(const f of L.haie)isoFeat(F,'hedge',isoParts(f.geometry,false));
+  // Points de repère et éléments complémentaires (symboles ISOM)
+  for(const f of L.detail_orographique){const nat=f.properties.nature||'';
+    const k=nat==='Rochers'?'rock':nat==='Grotte'?'cave':null;if(k)isoFeat(F,k,isoParts(f.geometry,true));}
+  for(const f of L.detail_hydrographique){const nat=f.properties.nature||'';
+    isoFeat(F,nat==='Source'?'spring':'well',isoParts(f.geometry,true));}
+  for(const f of L.construction_ponctuelle){const nat=f.properties.nature||'';
+    const k=nat==='Croix'?'cross':(nat==='Antenne'||nat==='Cheminée'||nat==='Clocher'||nat==='Autre construction élevée')?'tower':null;
+    if(k)isoFeat(F,k,isoParts(f.geometry,true));}
+  for(const f of L.ligne_electrique)isoFeat(F,'power',isoParts(f.geometry,false));
+  for(const f of L.troncon_de_voie_ferree){if(!(+f.properties.position_par_rapport_au_sol<0))isoFeat(F,'rail',isoParts(f.geometry,false));}
+  for(const f of L.cimetiere)isoFeat(F,'cemetery',isoParts(f.geometry,true));
+  for(const f of L.terrain_de_sport)isoFeat(F,(f.properties.nature||'').includes('natation')?'water':'sport',isoParts(f.geometry,true));
+  for(const f of L.reservoir)isoFeat(F,'building',isoParts(f.geometry,true));
   // BD Forêt V2 : type de formation végétale (1 lande/garrigue, 2 forêt ouverte, 3 chêne vert, 4 autre forêt fermée, 5 herbacée)
   for(const f of L['LANDCOVER.FORESTINVENTORY.V2:formation_vegetale']){
     const c=(f.properties.code_tfv||'').toUpperCase(),t=(f.properties.tfv||'').toLowerCase();
@@ -645,9 +672,25 @@ function paintIso(ctx,z,x,y,R,veg){
   line('road0',ISOC.black,0.35,null,'round');
   line('road1',ISOC.black,0.6,null,'round');line('road1',ISOC.road,0.4,null,'round');
   line('road2',ISOC.black,0.85,null,'round');line('road2',ISOC.road,0.6,null,'round');
-  // 8. bâtiments, carrières / falaises
+  // 8. terrains de sport (ouvert, bordé de noir), cimetières (zone olive = interdite)
+  fill('sport',ISOC.open);
+  if(by.sport){ctx.strokeStyle=ISOC.black;ctx.lineWidth=lw(0.14);for(const f of by.sport){ctx.beginPath();trace(f,true);ctx.stroke();}}
+  fill('cemetery','#A3A33A');
+  // 9. lignes électriques, voie ferrée (noir plein + tirets blancs)
+  line('power',ISOC.black,0.14);
+  line('rail',ISOC.black,0.6);line('rail','#FFFFFF',0.3,[1.5,1.5]);
+  // 10. bâtiments, carrières / falaises
   fill('building',ISOC.building);
   line('cliff',ISOC.black,0.35);
+  // 11. symboles ponctuels
+  const sym=(k,draw)=>{const L=by[k];if(!L)return;for(const f of L)for(const a of f.parts){const[px,py]=P(a[0],a[1]);draw(px,py);}};
+  const r=v=>Math.max(v*MM,1.2*R);
+  sym('rock',(x,y)=>{ctx.fillStyle=ISOC.black;ctx.beginPath();ctx.arc(x,y,r(0.35),0,7);ctx.fill();});                 // rocher
+  sym('cave',(x,y)=>{ctx.strokeStyle=ISOC.black;ctx.lineWidth=lw(0.18);ctx.beginPath();ctx.moveTo(x-r(0.5),y-r(0.4));ctx.lineTo(x,y+r(0.4));ctx.lineTo(x+r(0.5),y-r(0.4));ctx.stroke();}); // grotte
+  sym('spring',(x,y)=>{ctx.strokeStyle=ISOC.blue;ctx.lineWidth=lw(0.18);ctx.beginPath();ctx.arc(x,y,r(0.45),Math.PI,0);ctx.stroke();}); // source
+  sym('well',(x,y)=>{ctx.strokeStyle=ISOC.blue;ctx.lineWidth=lw(0.18);ctx.beginPath();ctx.arc(x,y,r(0.4),0,7);ctx.stroke();});    // point d'eau
+  sym('cross',(x,y)=>{ctx.strokeStyle=ISOC.black;ctx.lineWidth=lw(0.18);const s=r(0.4);ctx.beginPath();ctx.moveTo(x-s,y-s);ctx.lineTo(x+s,y+s);ctx.moveTo(x+s,y-s);ctx.lineTo(x-s,y+s);ctx.stroke();}); // croix
+  sym('tower',(x,y)=>{ctx.strokeStyle=ISOC.black;ctx.fillStyle=ISOC.black;ctx.lineWidth=lw(0.18);ctx.beginPath();ctx.arc(x,y,r(0.5),0,7);ctx.stroke();ctx.beginPath();ctx.arc(x,y,r(0.12),0,7);ctx.fill();}); // tour, antenne
 }
 // Couche Leaflet : chaque tuile est dessinée à partir des données en mémoire
 const IsoLayer=L.GridLayer.extend({
@@ -727,7 +770,21 @@ function applyLayers(){
     }
     if(!S.on[id]&&map.hasLayer(l))map.removeLayer(l);
     layerStyle(l,i+1,op);
+    const cat=CAT.find(c=>c.id===id),ct=l.getContainer&&l.getContainer();
+    if(cat&&cat.blend&&ct)ct.style.mixBlendMode=cat.blend;
   });
+}
+/* Mélanges tout prêts */
+const PRESETS_MIX={
+  complete:{on:['iso','lidar','nord'],op:{lidar:35,iso:100,nord:100}},
+  plan:{on:['planpur','lidar','nord'],op:{lidar:35,planpur:100,nord:100}},
+  photo:{on:['ortho','lidar','contour','nord'],op:{lidar:40,ortho:100,contour:100,nord:100}}
+};
+function applyMix(name){
+  const p=PRESETS_MIX[name];if(!p)return;
+  for(const c of CAT)S.on[c.id]=p.on.includes(c.id);
+  Object.assign(S.op,p.op);S.pinned=[];
+  computeOrder();applyLayers();renderList();saveState();
 }
 
 /* ---------- Panneau des couches ---------- */
@@ -1018,6 +1075,7 @@ async function exportFrame(kind){
     for(let k=0;k<active.length;k++){ // du dessous vers le dessus
       const id=active[k],L=CAT.find(x=>x.id===id);
       ctx.globalAlpha=(S.op[id]??100)/100;
+      ctx.globalCompositeOperation=L.blend||'source-over';
       if(L.grid){ // lignes nord tracées à la résolution d'impression
         const sp=gridSpacing()*ppm,dl=S.grid.decl*Math.PI/180,n=[Math.cos(dl),Math.sin(dl)],d=[Math.sin(dl),-Math.cos(dl)];
         const cx=X0+WP/2,cy=Y0+HP/2,R=Math.hypot(WP,HP),K=Math.ceil(R/sp);
@@ -1038,7 +1096,7 @@ async function exportFrame(kind){
       st(`Couche ${k+1}/${active.length} : ${L.nom}…`);
       fails+=await drawTiles(ctx,L,box,ppm,lat0,toXY,(d,t)=>st(`Couche ${k+1}/${active.length} : ${L.nom} (${d}/${t} morceaux)…`));
     }
-    ctx.globalAlpha=1;
+    ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over';
     ctx.restore();
 
     // cadre, titre, échelle, nord, crédits
