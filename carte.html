@@ -6,6 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>Carte interactive – Cartes CO</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.css">
 <style>
   :root{--ink:#1d2b24;--accent:#d9650f;--muted:#6b756f;--line:#ddd6c8;--card:#fff}
   *{box-sizing:border-box}
@@ -138,6 +139,8 @@
 <button id="exitCapture" onclick="capture(false)">✕</button>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.js"></script>
+<script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.0.22/leaflet-maplibre-gl.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script>
 const $=id=>document.getElementById(id);
@@ -146,7 +149,7 @@ const MOBILE=/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)||(navigator.p
 const STORE='cartesco-carto-v2';
 
 /* Classement d'intérêt pour la course d'orientation (ordre d'affichage de la liste) */
-const RANK=['iso','lidar','contour','nord','ortho','scan25','forest','shadow','osm','otm','hydro','plan','cadastre','bati','roads','dfci'];
+const RANK=['iso','lidar','contour','nord','ortho','scan25','planpur','forest','shadow','osm','otm','hydro','plan','cadastre','bati','roads','dfci'];
 
 /* ---------- Catalogue des couches ----------
    Ordre du tableau = ordre d'empilement automatique (le premier tout en bas). */
@@ -156,6 +159,7 @@ const CAT=[
   {id:'osm',    grp:'Fond',nom:'OpenStreetMap',desc:'Sentiers souvent plus à jour que l’IGN (cartographie collaborative)',url:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',max:19,op:100,attr:'© contributeurs OpenStreetMap'},
   {id:'otm',    grp:'Fond',nom:'OpenTopoMap',desc:'Carte topo OSM avec courbes, bonne vue d’ensemble',url:'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',max:17,op:100,sub:'abc',attr:'© OpenTopoMap (CC-BY-SA), © OSM'},
   {id:'scan25', grp:'Fond',nom:'Carte IGN Top 25',desc:'Sentiers, rochers, ruines, noms de lieux-dits : la référence rando',url:'https://data.geopf.fr/private/wmts?apikey=ign_scan_ws&SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=GEOGRAPHICALGRIDSYSTEMS.MAPS.SCAN25TOUR&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=image/jpeg',max:16,op:100},
+  {id:'planpur',grp:'Fond',nom:'Plan IGN sans noms',desc:'Style classique IGN (routes, chemins, bois, courbes, bâtiments) sans aucun nom de lieu : très lisible',vec:'classique',op:100},
   {id:'ortho',  grp:'Fond',nom:'Photo aérienne IGN',desc:'Clairières, bois clairs ou denses, zones rocheuses, murets',url:IGN('ORTHOIMAGERY.ORTHOPHOTOS','jpeg'),max:19,op:100},
   {id:'iso',    grp:'Fond',nom:'Carte CO style ISOM (auto)',desc:'Couleurs des cartes de course d’orientation, dessinée automatiquement depuis les données IGN. Approximation : à vérifier sur le terrain',iso:true,max:19,op:100},
   {id:'shadow', grp:'Relief',nom:'Ombrage du relief IGN',desc:'Relief estompé, partout en France (secours si pas de LiDAR)',url:IGN('IGNF_ELEVATION.ELEVATIONGRIDCOVERAGE.SHADOW'),max:17,op:45},
@@ -697,14 +701,32 @@ const NordLayer=L.GridLayer.extend({
 for(const c of CAT){
   if(c.grid){LAY[c.id]=new NordLayer({maxZoom:20});continue;}
   if(c.iso){LAY[c.id]=new IsoLayer({maxZoom:20});continue;}
+  if(c.vec){LAY[c.id]=L.maplibreGL({style:{version:8,sources:{},layers:[]},interactive:false});LAY[c.id]._vec=c.vec;continue;}
   LAY[c.id]=L.tileLayer(c.url,{maxNativeZoom:c.max,maxZoom:20,subdomains:c.sub||'abc',crossOrigin:true,
     attribution:c.attr||'© IGN Géoplateforme'});
 }
+/* Plan IGN vectoriel : style officiel IGN dont on retire toutes les couches de texte (noms de lieux, numéros…) */
+const VECSTYLE={};
+async function vecStyle(name){
+  if(VECSTYLE[name])return VECSTYLE[name];
+  const st=await fetch(`https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/${name}.json`).then(r=>r.json());
+  st.layers=st.layers.filter(l=>!(l.layout&&l.layout['text-field']));
+  VECSTYLE[name]=st;return st;
+}
+// Ordre et transparence : les couches vectorielles n'ont pas setZIndex/setOpacity, on règle leur conteneur
+function layerStyle(l,z,op){
+  if(l.setZIndex){l.setZIndex(z);l.setOpacity(op);return;}
+  const c=l.getContainer&&l.getContainer();if(c){c.style.zIndex=z;c.style.opacity=op;}
+}
 function applyLayers(){
   S.order.forEach((id,i)=>{
-    const l=LAY[id];l.setZIndex(i+1);l.setOpacity((S.op[id]??100)/100);
-    if(S.on[id]&&!map.hasLayer(l))l.addTo(map);
+    const l=LAY[id],op=(S.op[id]??100)/100;
+    if(S.on[id]&&!map.hasLayer(l)){
+      l.addTo(map);
+      if(l._vec&&!l._styled){l._styled=true;vecStyle(l._vec).then(st=>{const m=l.getMaplibreMap();if(m)m.setStyle(st);}).catch(e=>{l._styled=false;console.warn(e);});}
+    }
     if(!S.on[id]&&map.hasLayer(l))map.removeLayer(l);
+    layerStyle(l,i+1,op);
   });
 }
 
@@ -723,7 +745,7 @@ function renderList(){
       <input type="range" min="5" max="100" step="5" value="${S.op[id]}">`;
     const [cb,range]=d.querySelectorAll('input');const top=d.querySelector('.ontop');
     cb.onchange=()=>{S.on[id]=cb.checked;computeOrder();applyLayers();renderList();saveState();};
-    range.oninput=()=>{S.op[id]=+range.value;LAY[id].setOpacity(S.op[id]/100);};
+    range.oninput=()=>{S.op[id]=+range.value;layerStyle(LAY[id],S.order.indexOf(id)+1,S.op[id]/100);};
     range.onchange=saveState;
     top.onclick=()=>toTop(id);
     if(c.grid&&S.on[id]){
@@ -949,6 +971,24 @@ async function drawTiles(ctx,L,box,ppm,lat0,toXY,progress){
 
 // Longueur d'un segment de la barre d'échelle (3 segments, environ 1 à 2 cm chacun sur papier)
 function segFor(scale){return{2500:25,5000:50,7500:100,10000:100,15000:200,25000:250}[scale]||Math.round(scale/100);}
+// Rend le Plan IGN vectoriel du cadre dans un canevas hors écran, à la taille d'impression
+async function renderVec(L,lat0,lon0,Wm,WP,HP,pxmm){
+  const st=await vecStyle(L.vec);
+  const pr=pxmm*25.4/96;                       // pixels d'impression par pixel écran (96 ppp)
+  const Wc=Math.round(WP/pr),Hc=Math.round(HP/pr);
+  const div=document.createElement('div');
+  div.style.cssText=`position:fixed;left:0;top:0;width:${Wc}px;height:${Hc}px;visibility:hidden;pointer-events:none;z-index:-1`;
+  document.body.appendChild(div);
+  const z=Math.log2(78271.517*Math.cos(lat0*Math.PI/180)*Wc/Wm); // zoom pour que la largeur du cadre tienne pile
+  const m=new maplibregl.Map({container:div,style:st,center:[lon0,lat0],zoom:z,interactive:false,attributionControl:false,
+    preserveDrawingBuffer:true,pixelRatio:pr,fadeDuration:0,maxCanvasSize:[8192,8192]});
+  try{
+    await new Promise((res,rej)=>{const t=setTimeout(()=>rej(new Error('délai dépassé')),90000);m.once('idle',()=>{clearTimeout(t);res();});});
+    const src=m.getCanvas(),c=document.createElement('canvas');c.width=src.width;c.height=src.height;
+    c.getContext('2d').drawImage(src,0,0);return c;
+  }catch(e){console.warn('Plan IGN vectoriel',e);return null;}
+  finally{m.remove();div.remove();}
+}
 let exporting=false;
 async function exportFrame(kind){
   if(exporting)return;exporting=true;
@@ -983,6 +1023,12 @@ async function exportFrame(kind){
         const cx=X0+WP/2,cy=Y0+HP/2,R=Math.hypot(WP,HP),K=Math.ceil(R/sp);
         ctx.strokeStyle='#1450d2';ctx.lineWidth=mm(0.2);
         for(let q=-K;q<=K;q++){const px=cx+q*sp*n[0],py=cy+q*sp*n[1];ctx.beginPath();ctx.moveTo(px-R*d[0],py-R*d[1]);ctx.lineTo(px+R*d[0],py+R*d[1]);ctx.stroke();}
+        continue;
+      }
+      if(L.vec){ // Plan IGN vectoriel rendu directement à la résolution d'impression
+        st(`Couche ${k+1}/${active.length} : ${L.nom}…`);
+        const img=await renderVec(L,lat0,lon0,Wm,WP,HP,pxmm);
+        if(img)ctx.drawImage(img,X0,Y0,WP,HP);else fails++;
         continue;
       }
       if(L.iso){ // données IGN de toute la zone du cadre
