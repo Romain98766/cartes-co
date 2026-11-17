@@ -392,13 +392,13 @@ async function getOSMData(s,w,n,e){
 const RASTERS={
   scan25:{maxZ:16,nom:'IGN SCAN 25®',
     url:(z,x,y)=>`https://data.geopf.fr/private/wmts?apikey=ign_scan_ws&SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=GEOGRAPHICALGRIDSYSTEMS.MAPS.SCAN25TOUR&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX=${z}&TILEROW=${y}&TILECOL=${x}&FORMAT=image/jpeg`},
-  plan:{maxZ:18,nom:'Plan IGN',
+  plan:{maxZ:18,zOffset:-1,nom:'Plan IGN', // un zoom de moins = textes 2x plus gros à l'impression
     url:(z,x,y)=>`https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX=${z}&TILEROW=${y}&TILECOL=${x}&FORMAT=image/png`}
 };
 async function drawRaster(ctx,kind,box,ppm,lat0,toXY){
   const R=RASTERS[kind];
   // zoom dont la résolution (m/pixel) est au moins aussi fine que celle de l'impression
-  let z=Math.ceil(Math.log2(156543.034*Math.cos(lat0*Math.PI/180)*ppm));
+  let z=Math.ceil(Math.log2(156543.034*Math.cos(lat0*Math.PI/180)*ppm))+(R.zOffset||0);
   z=Math.max(10,Math.min(R.maxZ,z));
   let tx0,tx1,ty0,ty1;
   const range=()=>{
