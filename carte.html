@@ -379,15 +379,17 @@ async function bilTile(M,layer,z,col,row){
     }
     return null;
   })();
-  cachePut(M,key,p,400);
-  const v=await p;cachePut(M,key,v,400);return v;
+  cachePut(M,key,p,300);
+  const v=await p;cachePut(M,key,v,300);return v;
 }
 const MNS_L='ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES.MNS',MNT_L='ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES';
-async function bilEnsure(M,layer,z,lon0,lat0,lon1,lat1){ // lat0 = sud, lat1 = nord
-  const d=180/2**z,jobs=[];
-  for(let c=Math.floor((lon0+180)/d);c<=Math.floor((lon1+180)/d);c++)
-    for(let r=Math.floor((90-lat1)/d);r<=Math.floor((90-lat0)/d);r++)jobs.push(bilTile(M,layer,z,c,r));
+async function bilEnsure(M,layer,z,lon0,lat0,lon1,lat1){ // lat0 = sud, lat1 = nord ; renvoie une table locale
+  const d=180/2**z,jobs=[],local=new Map();
+  for(let c=Math.floor((lon0+180)/d)-1;c<=Math.floor((lon1+180)/d)+1;c++)
+    for(let r=Math.floor((90-lat1)/d)-1;r<=Math.floor((90-lat0)/d)+1;r++)
+      jobs.push(bilTile(M,layer,z,c,r).then(t=>local.set(z+'/'+c+'/'+r,t)));
   await Promise.all(jobs);
+  return local;
 }
 function bilGet(M,z,lon,lat,bilin){
   const d=180/2**z,fx=(lon+180)/d,fy=(90-lat)/d;
@@ -406,7 +408,7 @@ async function vegRaw(zi,x,y){
       const url=`https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=ORTHOIMAGERY.ORTHOPHOTOS.IRC&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX=${zi}&TILEROW=${y}&TILECOL=${x}&FORMAT=image/jpeg`;
       const n2=2**zi,lon0=wLon(x/n2),lon1=wLon((x+1)/n2),lat1=wLat(y/n2),lat0=wLat((y+1)/n2);
       const zm=Math.max(10,Math.min(16,zi-1)); // MNS ≈ 1 à 2 m selon le zoom
-      const [bm]=await Promise.all([fetchTile(url),
+      const [bm,MNS,MNT]=await Promise.all([fetchTile(url),
         bilEnsure(VEG.mns,MNS_L,zm,lon0,lat0,lon1,lat1),
         bilEnsure(VEG.mnt,MNT_L,14,lon0,lat0,lon1,lat1)]);
       if(!bm)return null;
@@ -421,7 +423,7 @@ async function vegRaw(zi,x,y){
         for(let yy=0;yy<B;yy++)for(let xx=0;xx<B;xx++){
           const py=by*B+yy,px=bx*B+xx,i=(py*256+px)*4,nir=d[i],r=d[i+1],nd=(nir-r)/(nir+r+1);
           s+=nd;sn+=nir;s2+=nir*nir;cnt++;
-          const hs=bilGet(VEG.mns,zm,lonC[px],latR[py],false),ht=bilGet(VEG.mnt,14,lonC[px],latR[py],true),hh=hs-ht;
+          const hs=bilGet(MNS,zm,lonC[px],latR[py],false),ht=bilGet(MNT,14,lonC[px],latR[py],true),hh=hs-ht;
           if(isFinite(hh)){valid++;if(hh>=0.3)v03++;if(hh>=1.5)v1++;if(hh>=4)v4++;}
         }
         const nd=s/cnt;
