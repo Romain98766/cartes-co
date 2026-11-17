@@ -204,7 +204,7 @@ map.attributionControl.setPrefix('');
    Couleurs et épaisseurs de trait inspirées de la norme ISOM 2017-2,
    calculées en millimètres sur le papier à l'échelle du cadre choisi.
    ===================================================================== */
-S.iso=Object.assign({eq:'auto'},S.iso||{});
+S.iso=Object.assign({eq:'auto',veg:1.0},S.iso||{}); // veg : hauteur (m) à partir de laquelle un buisson compte comme gênant
 const ISO={data:null,box:null,loading:null,elev:new Map()};
 const wX=lon=>(lon+180)/360;
 const wY=lat=>{const r=lat*Math.PI/180;return(1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2;};
@@ -408,7 +408,8 @@ function bilGet(M,z,lon,lat,bilin){
 }
 // classes : 0 terrain ouvert, 1 semi-ouvert, 2 forêt courable, 3 végétation gênante, 4 végétation très dense
 async function vegRaw(zi,x,y){
-  const key=zi+'/'+x+'/'+y;
+  const TH=+S.iso.veg||1.0;
+  const key=zi+'/'+x+'/'+y+'/'+TH;
   if(VEG.raw.has(key))return VEG.raw.get(key);
   const p=(async()=>{
     try{
@@ -433,7 +434,7 @@ async function vegRaw(zi,x,y){
           const py=by*B+yy,px=bx*B+xx,i=(py*256+px)*4,nir=d[i],r=d[i+1],nd=(nir-r)/(nir+r+1);
           s+=nd;sn+=nir;s2+=nir*nir;cnt++;
           const hs=bilGet(MNS,zm,lonC[px],latR[py],false),ht=bilGet(MNT,14,lonC[px],latR[py],true),hh=hs-ht;
-          if(isFinite(hh)){valid++;if(hh>=0.3)v03++;if(hh>=1.5)v1++;if(hh>=4)v4++;}
+          if(isFinite(hh)){valid++;if(hh>=0.3)v03++;if(hh>=TH)v1++;if(hh>=4)v4++;}
         }
         const nd=s/cnt;
         if(valid>=cnt/2){
@@ -710,9 +711,14 @@ function renderList(){
           <option value="auto">auto : ${auto} m (cadre 1:${sc.toLocaleString('fr-FR')})</option>
           <option value="2.5">2,5 m</option><option value="5">5 m</option><option value="10">10 m</option>
         </select></label>
-        <small>Blanc = forêt courable · vert = végétation gênante · jaune = terrain ouvert · brun = relief · noir = chemins, murs, rochers · bleu = eau. Épaisseurs calculées pour l'échelle du cadre. Données IGN BD TOPO : la densité réelle de la végétation se vérifie sur le terrain.</small>`;
+        <label>Végétation <select class="vegsel">
+          <option value="1.5">moins de vert</option><option value="1">normal</option><option value="0.6">plus de vert</option>
+        </select></label>
+        <small>Végétation calculée d'après sa hauteur (modèles de surface et de terrain IGN) : « plus de vert » si ta zone paraît trop jaune par rapport au terrain. Blanc = forêt courable · vert = végétation gênante · jaune = terrain ouvert · brun = relief · noir = chemins, murs, rochers · bleu = eau. Épaisseurs calculées pour l'échelle du cadre. Données IGN BD TOPO : la densité réelle de la végétation se vérifie sur le terrain.</small>`;
       const sel=gs.querySelector('select');sel.value=String(S.iso.eq);
       sel.onchange=()=>{S.iso.eq=sel.value==='auto'?'auto':+sel.value;LAY.iso.redraw();saveState();};
+      const vs=gs.querySelector('.vegsel');vs.value=String(S.iso.veg);
+      vs.onchange=()=>{S.iso.veg=+vs.value;LAY.iso.redraw();saveState();};
       d.appendChild(gs);
     }
     box.appendChild(d);
