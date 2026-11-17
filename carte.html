@@ -149,7 +149,7 @@ const RANK=['lidar','contour','nord','ortho','scan25','forest','shadow','osm','o
    Ordre du tableau = ordre d'empilement automatique (le premier tout en bas). */
 const IGN=(layer,fmt,style)=>`https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=${layer}&STYLE=${style||'normal'}&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=image/${fmt||'png'}`;
 const CAT=[
-  {id:'plan',   grp:'Fond',nom:'Plan IGN',desc:'Carte simple et claire, peu de détails en forêt',url:IGN('GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2'),max:19,op:100,on:true},
+  {id:'plan',   grp:'Fond',nom:'Plan IGN',desc:'Carte simple et claire, peu de détails en forêt',url:IGN('GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2'),max:19,zOff:-1,op:100,on:true},
   {id:'osm',    grp:'Fond',nom:'OpenStreetMap',desc:'Sentiers souvent plus à jour que l’IGN (cartographie collaborative)',url:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',max:19,op:100,attr:'© contributeurs OpenStreetMap'},
   {id:'otm',    grp:'Fond',nom:'OpenTopoMap',desc:'Carte topo OSM avec courbes, bonne vue d’ensemble',url:'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',max:17,op:100,sub:'abc',attr:'© OpenTopoMap (CC-BY-SA), © OSM'},
   {id:'scan25', grp:'Fond',nom:'Carte IGN Top 25',desc:'Sentiers, rochers, ruines, noms de lieux-dits : la référence rando',url:'https://data.geopf.fr/private/wmts?apikey=ign_scan_ws&SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=GEOGRAPHICALGRIDSYSTEMS.MAPS.SCAN25TOUR&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=image/jpeg',max:16,op:100},
@@ -391,7 +391,7 @@ const tileURL=(L,z,x,y)=>L.url.replace('{z}',z).replace('{x}',x).replace('{y}',y
 // Dessine une couche (tuiles) dans le canevas d'impression ; renvoie le nombre de tuiles manquantes
 async function drawTiles(ctx,L,box,ppm,lat0,toXY,progress){
   let z=Math.ceil(Math.log2(156543.034*Math.cos(lat0*Math.PI/180)*ppm));
-  z=Math.max(8,Math.min(L.max,z));
+  z=Math.max(8,Math.min(L.max,z+(L.zOff||0))); // zOff : textes plus gros à l'impression
   let tx0,tx1,ty0,ty1;
   const range=()=>{const[xa,ya]=tileXY(box.latMax,box.lonMin,z),[xb,yb]=tileXY(box.latMin,box.lonMax,z);
     tx0=Math.floor(xa);tx1=Math.floor(xb);ty0=Math.floor(ya);ty1=Math.floor(yb);return(tx1-tx0+1)*(ty1-ty0+1);};
@@ -480,7 +480,7 @@ async function exportFrame(kind){
     const names=active.slice().reverse().map(id=>CAT.find(c=>c.id===id).nom);
     const osm=active.some(id=>id==='osm'||id==='otm');
     ctx.font=`${mm(2.5)}px Arial`;ctx.fillStyle='#333';
-    ctx.fillText(`Couches : ${names.join(' + ')} · © IGN Géoplateforme${osm?' · © contributeurs OpenStreetMap / OpenTopoMap':''} · non relevée sur le terrain · nord géographique`,mm(8),mm(ph-2.5));
+    ctx.fillText(`Couches : ${names.join(' + ')} · © IGN Géoplateforme${osm?' · © contributeurs OpenStreetMap / OpenTopoMap':''} · non relevée sur le terrain · flèche N = nord géographique`,mm(8),mm(ph-2.5));
     ctx.fillText(`Centre : ${lat0.toFixed(5)}, ${lon0.toFixed(5)}`,mm(pw-52),mm(sy+3.2));
 
     const name=(title.replace(/[^\w\-]+/g,'_')||'carte')+'_1-'+scale+'_'+paper;
